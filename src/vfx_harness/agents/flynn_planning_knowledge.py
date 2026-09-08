@@ -9,7 +9,7 @@ from contextlib import contextmanager
 import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
 
-from vfx_harness.agents import flynn_questions
+from vfx_harness.agents import flynn_questions, flynn_reference_measurement
 from vfx_harness.knowledge import planning_vocabulary, recipe_lookup
 from vfx_harness.observability.run_artifacts import RunLayout
 from vfx_harness.orchestration import authority_selection, plan_inputs, vocabulary_gap_publication
@@ -56,12 +56,14 @@ def planning_knowledge_tools(
         layout.shot, selected.plan.bundle.root / "requirements.json", "global planning requirements",
     ))["requirements"]
     statements = {row["id"]: row["statement"].strip() for row in requirements if row["id"] in owned_ids}
+    judges = layer["judge"]
     roles = None
     if unit_id is not None:
         unit = next((row for row in layer["stages"] if row["id"] == unit_id), None)
         if unit is None:
             raise ValueError(f"unknown planning unit {unit_id!r} in layer {layer_id}; use its selected unit id")
         roles = tuple(unit["mutates"]["roles"])
+        judges = unit["evaluation"]["judge"]
     layer_ids = {str(row["id"]) for row in layers}
     axes = {axis for row in layers for axis in row["owns"]}
     vocabulary = planning_vocabulary.evidence_vocabulary()
@@ -196,9 +198,14 @@ def planning_knowledge_tools(
         check()
         return flynn.GuardDecision(True, "selected VFX planning knowledge scope remains current")
 
+    references = tuple(sorted({row["ref"] for row in judges}))
+    measurement_tools = ((flynn_reference_measurement.reference_measurement_tool(
+        layout=layout, references=references, check_current=check, identity=identity,
+    ),) if references else ())
     check()
     return (
         (
+            *measurement_tools,
             flynn.Tool.structured("evidence_vocabulary", description=(
                 "Read the evidence kind index with kind='', then select one exact kind for its definition, "
                 "domain, fields and operators. Never guess a kind or substitute a vacuous contract."

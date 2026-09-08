@@ -326,3 +326,10 @@ Flynn transports the stored record and ledger digest as an external observation.
 not certify that the vocabulary is insufficient, select a provisional decision, or
 commit accepted state. The existing shot-wide gap semantics and independent VFX decision
 evaluation remain unchanged. Unit sessions have no gap-publication grant.
+
+Native reference measurement is likewise VFX-owned: the selected layer or unit determines
+which judge references are measurable, the canonical metric registry computes values,
+and the response binds image and fingerprint to one verified byte snapshot. Each of six
+permitted reads includes the image even when repeated; a previous observation is not
+proof that bounded context still contains it. Flynn transports the multimodal result and
+counts the tool call without committing domain state or charging an external action.

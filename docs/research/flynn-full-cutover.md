@@ -521,3 +521,35 @@ Full regression validation passed **3,211 tests** on unchanged runtime source
 (642 + 926 + 831 + 812), with the 15 existing Pillow warnings. All four groups exited
 successfully. Flynn's checkout remains clean on `main` at `50a8df2`; no ARC tests or SDK
 changes were required for this VFX-only capability.
+
+## Native reference measurement
+
+Native layer/unit planning now includes `measure_ref`, scoped to the selected layer's
+judge references or the exact selected unit's evaluation references. The existing live
+planning guard runs before dispatch; the measurement also checks the bound reference
+hash before and after computation. The image encoder and metrics consume one byte
+snapshot, and every successful response includes the original image, source digest,
+dimensions and canonical fingerprint. No path-based metric cache supplies the values.
+
+A fresh session permits six reads, including rereads. Images are restricted to verified
+PNG/JPEG/WEBP stills, 8 MiB and 16 million pixels. Invalid paths refuse before tool
+reservation; invalid image bytes and size violations return explicit refusals. Metric
+programming failures propagate rather than being mislabeled as reference problems.
+Read-only measurement spends no external-action budget and commits no accepted state.
+
+Unlike the remaining retained-conversation adapter, the native tool never suppresses an
+image because an earlier call returned it. Bounded context may have evicted that earlier
+observation. Canonical metrics operate directly on decoded source pixels; there is no
+intermediate transport resize or JPEG conversion before measuring. Fingerprints describe
+image properties, not VFX success or permission to change a contract.
+
+Confined spike execution remains before the production JIT session cutover. No SDK
+change or paid model invocation is needed for this capability.
+
+Focused validation passed: **97 tests** covering native measurement, global planning
+inputs, and existing fingerprint/plan contracts, plus **19 planning-knowledge tests**.
+The installed package imports native knowledge and measurement with Claude blocked and
+computes a canonical fingerprint from verified image bytes. Complete-source Ruff and
+diff checks passed. Full regression validation passed **3,228 tests** on unchanged runtime source
+(798 + 798 + 816 + 816), with the 15 existing Pillow warnings. All four groups exited
+successfully. SDK source and production shots were unchanged.

@@ -18,6 +18,11 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 def snapshot_image(folder: Path, relative: str) -> tuple[flynn.ImageInput, dict]:
     """Snapshot a selected still; links, escapes and unsupported bytes refuse."""
     payload = read_real_file(folder, folder / relative, "selected model image")
+    return snapshot_image_payload(payload, relative)
+
+
+def snapshot_image_payload(payload: bytes, relative: str) -> tuple[flynn.ImageInput, dict]:
+    """Encode one verified byte snapshot so measurements can use the same bytes."""
     if len(payload) > MAX_IMAGE_BYTES:
         raise ValueError(f"selected image {relative!r} exceeds {MAX_IMAGE_BYTES} bytes")
     with Image.open(io.BytesIO(payload)) as image:

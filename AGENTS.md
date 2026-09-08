@@ -1144,6 +1144,10 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   registered evidence kinds. Unit sessions receive no such grant. Publication rechecks
   the live attempt and selected authority, atomically compares the ledger predecessor,
   and reads back the stored record; a tool observation is not plan acceptance (ADR-0012).
+  Native reference measurement is limited to the selected layer/unit judge references,
+  six reads, verified stills of at most 8 MiB and 16 million pixels. Each successful read
+  returns the image and canonical measurements from the same byte snapshot; rereads
+  include the image because bounded context may have evicted an earlier observation.
   Recorded gaps are durable shot state read through the one shared
   `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
   required argument distinct from the plan-bundle `global_root`. Reading them relative to the
