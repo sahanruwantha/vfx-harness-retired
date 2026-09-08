@@ -1148,6 +1148,11 @@ patch only the visible symptom or specialize the fix to the scene that exposed i
   six reads, verified stills of at most 8 MiB and 16 million pixels. Each successful read
   returns the image and canonical measurements from the same byte snapshot; rereads
   include the image because bounded context may have evicted an earlier observation.
+  Native spikes construct under the artifact Python policy and evaluate in a fresh
+  confined Blender process with automatic Python execution disabled. Model stdout is
+  diagnostic only. Four attempts per session and two failures per semantic hypothesis
+  bound exploration; row reordering does not reset that budget. Scratch spike reports
+  are not published planning evidence or accepted scene state (ADR-0012).
   Recorded gaps are durable shot state read through the one shared
   `vocabulary_gaps_path(shot_folder)`; materialization validation takes `shot_folder` as a
   required argument distinct from the plan-bundle `global_root`. Reading them relative to the

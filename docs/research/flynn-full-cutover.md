@@ -553,3 +553,45 @@ computes a canonical fingerprint from verified image bytes. Complete-source Ruff
 diff checks passed. Full regression validation passed **3,228 tests** on unchanged runtime source
 (798 + 798 + 816 + 816), with the 15 existing Pillow warnings. All four groups exited
 successfully. SDK source and production shots were unchanged.
+
+## Native confined spikes
+
+`agents/flynn_spikes.py` binds a fresh layer-planning spike tool to the current VFX
+owner check, selected authority and authored/decision inputs. Eligibility and hypothesis
+budgets now live in the shared transport-independent `agents/spike_policy.py`; existing
+planning transport imports the same policy. Reordering contract rows cannot reset the
+semantic hypothesis budget. Native requests use closed bounded arguments and the existing
+artifact Python policy, with four attempts per session and two failures per hypothesis.
+
+`blender/spike_execution.py` constructs a private scratch scene and evaluates it in a
+second Blender process with automatic Python execution disabled. Both processes use the
+mandatory descriptor-pinned filesystem confinement and worker syscall policy. Only the
+scratch outputs are writable; plan/shot authority is not mounted as writable. The model's
+stdout is diagnostic text, never the contract-result channel. Trusted probes in the fresh
+process produce measurements, and the parent applies the existing contract predicates.
+Execution failure or timeout produces no invented measurements or passing result.
+
+The construction/evaluation pair shares a bounded timeout. Output files are capped at
+8 MiB; feedback carries bounded diagnostics and links to a hashed run report. One-shot
+workers exit explicitly after their trusted program completes: Blender's audio teardown
+otherwise attempts denied socket operations and hangs even with `-noaudio`. Exceptions
+remain failures, and neither network restrictions nor the artifact policy are relaxed.
+
+Native spike reports are scratch observations with exact source/artifact hashes and
+`planning_evidence_published=false`. They are not silently promoted into the existing
+immutable planning-evidence receipt format. Production JIT session wiring and explicit
+publication of admissible spike evidence remain before the old planning transport can
+be removed. The existing transport's direct process launcher is not used by native
+spikes; its retirement accompanies that cutover. No SDK source change is required.
+
+Focused validation passed **69 tests**, including real confined Blender construction,
+fresh-process socket measurement, rejection of a forged stdout success marker, a
+960×540 render, and a real timeout without invented measurements. Native tool tests
+cover scope/argument refusal, owner loss, external budgets, hypothesis failures and
+report identity; existing planning and eligibility tests also passed. The installed
+package imports native spikes with Claude blocked. Complete-source Ruff and diff checks
+passed. This validation used temporary fixtures and no paid inference or production shot.
+
+Full regression validation passed **3,238 tests** on unchanged runtime source
+(805 + 805 + 805 + 823), with the 15 existing Pillow warnings. All four groups exited
+successfully; complete-source Ruff and diff checks remained clean. SDK source was unchanged.

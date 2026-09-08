@@ -333,3 +333,10 @@ and the response binds image and fingerprint to one verified byte snapshot. Each
 permitted reads includes the image even when repeated; a previous observation is not
 proof that bounded context still contains it. Flynn transports the multimodal result and
 counts the tool call without committing domain state or charging an external action.
+
+Native spike execution keeps VFX eligibility, hypothesis budgets, confinement, scene
+contracts and evidence publication outside the SDK. Flynn records one external operation
+and its structured observation. Construction and measurement run in separate confined
+Blender processes so script stdout cannot become a measurement channel. Reports bind
+current planning authority and exact scratch artifacts; explicit planning-evidence
+publication remains a separate VFX transaction, not a consequence of tool success.
