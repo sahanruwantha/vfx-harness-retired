@@ -1529,3 +1529,54 @@ This verifies the current environment checks, including confined Blender and the
 plan-consumer directory primitive; it does not verify DeepSeek authentication or
 qualitative capability. Installed package metadata still selects SDK `main` commit
 `189a4776559a09120111f6557ee14731993874c6`, non-editable.
+
+## Qualified critic protocol separated from candidate observations
+
+The native critic now requires a typed `CriticPrompt`: calibrated rubric, selected
+authority JSON and changing observation JSON. Production prompt construction lives in
+`agents/critic_rubric.py`, extracted from the large build-prompt module. Medium,
+review-role, scope, target and claim interpretation remain qualified. Exact candidate
+paths, evidence values, auxiliary-image metadata and prior scores are recorded per
+invocation. Focus layout instructions remain in the static rubric; image labels and
+focus order must agree with the actual attached manifest.
+
+Reproducing the committed prompt renderer with probe/canonical filenames and changed
+measured values confirmed the former full-prompt hashes differ. The typed renderer
+retains matching rubric/authority hashes and different observation hashes. Evidence:
+`/tmp/vfx-critic-protocol-reproduction.json`. HIR-0256 records this mechanism failure
+and the rejected string-normalization alternative.
+
+Native input, invocation and observation reports are v2. Independent calibration
+reopens their SQLite requests, parses the typed context, verifies exact observation
+and complete-context digests, and rechecks images. Rehashed observation metadata and
+obsolete schemas refuse. Qualified admission accepts changed observations only under
+the same exact rubric, authority, scope, image representation and provider profile.
+The fixed required-context cap remains 24,000 characters. No model observation or
+calibration fixture grants VFX acceptance.
+
+Validation so far: the first 105-test gate passed, the expanded 168-test gate passed,
+and 27 final rubric/image/context checks passed after preserving the focus-layout
+instructions. These are overlapping sets. Complete-source Ruff, public CLI loading
+and tracked/untracked whitespace checks passed. The full frozen-source regression
+collected 3,616 tests. Its first run (`/tmp/vfx-spike-regression-u_k759mv`) exposed
+the stale raw-autonomy-read inventory: the removed prompt formatter no longer reads
+that flag to label evidence. The same architecture case independently reproduced the
+failure. All four workers were stopped before reducing the expected inventory; that
+failed/interrupted run is not counted as validation. All 154 architecture tests then
+passed. Final review found the superseded image-description formatter had no production
+callers. The restarted workers (`/tmp/vfx-spike-regression-b5j_zk5v`) were stopped
+before removing it, and all 38 final image/rubric/architecture checks passed. Neither
+stopped run is counted as validation. The completed full regression in
+`/tmp/vfx-spike-regression-vuzekgk_` reported 3,610 passed and six failed. All six
+failures came from consumer stubs returning the retired string prompt. The stubs now
+return `CriticPrompt` and the image tuple, preserving all qualification/acceptance
+assertions; all 19 affected consumer/guard/contract tests passed. Complete-source Ruff
+passed. The final frozen-source regression passed all 3,616 tests with 121 warnings
+in `/tmp/vfx-spike-regression-x30yf23a`: shard counts 890, 909, 909 and 908, all
+four workers exiting zero. HIR-0256 is accepted. No SDK change, ARC work or paid
+inference was required.
+
+This is a protocol checkpoint, not live qualification. One credential still selects
+one exact role/frame/image profile. Multi-profile selection, remaining qualitative
+and simplify builders, complete layer/debt/acceptance ownership, legacy dependency
+removal and reviewed real-model end-to-end validation remain owed.

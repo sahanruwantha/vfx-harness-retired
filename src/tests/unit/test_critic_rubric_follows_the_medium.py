@@ -35,7 +35,7 @@ AXES = [("hero_dominance", "the hero tower dominates the frame")]
 
 
 def test_solid_plate_tells_the_critic_materials_are_suppressed():
-    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="solid")
+    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="solid").rubric
     low = prompt.lower()
     assert "workbench solid" in low, "a solid plate must be named as such to the critic"
     assert "suppressed" in low
@@ -47,7 +47,7 @@ def test_solid_plate_tells_the_critic_materials_are_suppressed():
 
 
 def test_solid_plate_forbids_scoring_appearance_down():
-    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="solid")
+    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="solid").rubric
     low = prompt.lower()
     for word in ("colour", "emission", "reflectivity"):
         assert word in low, f"solid rubric must name {word} as unjudgeable here"
@@ -55,7 +55,7 @@ def test_solid_plate_forbids_scoring_appearance_down():
 
 def test_eevee_plate_gets_no_suppression_block():
     """A beauty plate must keep the full appearance rubric."""
-    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="eevee")
+    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium="eevee").rubric
     assert "workbench solid" not in prompt.lower()
 
 
@@ -82,7 +82,7 @@ def test_solid_unit_reaches_the_prompt_with_its_block():
     medium = _unit_raster_mode(unit)
     assert medium == "solid", "a workbench_solid debt must select the solid plate"
 
-    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium=medium)
+    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES, render_medium=medium).rubric
     assert "workbench solid" in prompt.lower(), (
         "the medium the builder derives must reach the critic's rubric"
     )
@@ -90,5 +90,5 @@ def test_solid_unit_reaches_the_prompt_with_its_block():
 
 def test_absent_medium_is_unchanged():
     """Callers that do not know the medium keep today's behaviour."""
-    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES)
+    prompt = critic_prompt(_shot(), _milestone(), "cand.png", AXES).rubric
     assert "workbench solid" not in prompt.lower()

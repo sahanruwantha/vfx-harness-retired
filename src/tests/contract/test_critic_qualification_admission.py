@@ -15,12 +15,13 @@ from PIL import Image
 from tests.contract.test_flynn_critic_transport import audit, response
 from tests.critic_calibration_fixtures import measured_artifact
 from vfx_harness.agents import critic_qualification, critic_transport
+from vfx_harness.domain.critic_prompt import CriticPrompt, protocol_schema_digest
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
 from vfx_harness.domain.work_units.claims import Claim
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.plan_bundle_integrity import PlanPublicationError
 
-PROMPT = "Judge the supplied reference and candidate on the declared form axis."
+PROMPT = CriticPrompt("Judge the supplied reference and candidate on the declared form axis.")
 AXES = (("form", "Visible form"),)
 IMAGES = (("reference", "reference.png"), ("candidate", "candidate.png"), ("focus", "focus.png"))
 RATES = ("false_pass_rate", "false_failure_rate", "repeatability_failure_rate",
@@ -45,7 +46,7 @@ def publish(bound, claim, record):
 @pytest.fixture
 def claim_profile(bound):
     q = {"suite": "form-v1", "judge_model": deepseek.VISION_MODEL,
-         "prompt": hashlib.sha256(PROMPT.encode()).hexdigest(), "evidence_shape": critic_transport.IMAGE_SHAPE,
+         "prompt": hashlib.sha256(PROMPT.rubric.encode()).hexdigest(), "evidence_shape": critic_transport.IMAGE_SHAPE,
          "artifact": "qualification.json", "artifact_sha256": "0" * 64}
     claim = Claim.parse({
         "id": "claim.form", "proposition": "The subject has the declared form", "axis": "form",
@@ -61,8 +62,9 @@ def claim_profile(bound):
     )
     schema = critic_verdict_schema(list(AXES), allow_na=False, focus_frames=[7])
     profile = {
-        "schema": "vfx-harness.critic-invocation/v1",
-        "scope": {"scope_id": "layer:surface", "phase": "observer", "axes": AXES, "frames": (7,),
+        "schema": "vfx-harness.critic-invocation/v2",
+        "context_schema_sha256": protocol_schema_digest(),
+        "scope": {"authority": {}, "scope_id": "layer:surface", "phase": "observer", "axes": AXES, "frames": (7,),
                   "allow_na": False, "claims": [{k: v for k, v in asdict(claim).items() if k != "qualification"}]},
         "prompt_sha256": q["prompt"],
         "response_schema_sha256": hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest(),
@@ -117,6 +119,39 @@ def test_selected_qualification_matches_dispatched_configuration_without_accepti
         assert run.records()["commits"] == []
         usage = json.loads(run.records()["inference_usage"][0]["payload"])
         assert usage["configuration_sha256"] == report["qualification_check"]["configuration_sha256"]
+
+
+def test_changed_observations_reuse_protocol_but_retain_exact_context_identity(bound, qualified):
+    claim, _record = qualified
+    reports = []
+    for value in (1, 2):
+        candidate = f"candidate-{value}.png"
+        (bound.shot / candidate).write_bytes((bound.shot / "candidate.png").read_bytes())
+        prompt = replace(PROMPT, observation_json=json.dumps({
+            "candidate": candidate, "evidence": [{"id": "size", "value": value}],
+        }))
+        result = invoke(bound, claim, prompt=prompt,
+                        images=(("reference", "reference.png"), ("candidate", candidate), ("focus", "focus.png")))
+        assert result["qualification_verified"] is True
+        assert result["acceptance_authorized"] is False
+        report = json.loads((bound.shot / result["report"]).read_text())
+        with flynn.SQLiteRun.open(bound.root / report["journal"]) as journal:
+            request = json.loads(journal.records()["operations"][0]["request"])
+            assert prompt.observation_json in request["objective"]
+            assert not journal.records()["commits"]
+        reports.append(report)
+    assert reports[0]["qualification_check"]["profile"] == reports[1]["qualification_check"]["profile"]
+    assert reports[0]["inputs"]["observation_sha256"] != reports[1]["inputs"]["observation_sha256"]
+    assert reports[0]["inputs"]["context_sha256"] != reports[1]["inputs"]["context_sha256"]
+
+
+@pytest.mark.parametrize("change", ["rubric", "authority"])
+def test_rubric_or_selected_authority_change_requires_requalification(bound, qualified, change):
+    claim, _record = qualified
+    prompt = (replace(PROMPT, rubric=PROMPT.rubric + " Different judging rule.") if change == "rubric"
+              else replace(PROMPT, authority_json=json.dumps({"claims": [{"id": "different"}]})))
+    with pytest.raises(ValueError, match=r"differs|mismatch"):
+        invoke(bound, claim, lambda _: pytest.fail("changed qualified protocol reached model"), prompt=prompt)
 
 
 @pytest.mark.parametrize("failure", ["prompt", "evidence_shape", "judge_model", "passed", "metric",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 from vfx_harness.agents import critic_images, critic_qualification, critic_session
 from vfx_harness.agents.build_prompts import (
@@ -38,7 +38,7 @@ from vfx_harness.orchestration.ledger import Milestone
 
 def _critic_images(
     shot: Shot, reference: str, candidate: str, *, focus_panels=None,
-    motion_rel=None, motion_frames=None, prior_rel=None, prior_mean=None,
+    motion_rel=None, prior_rel=None,
 ):
     """Attach the complete declared manifest, or refuse before querying the critic."""
     panels = focus_panels or []
@@ -52,29 +52,7 @@ def _critic_images(
     for slot in slots:
         if not (shot.folder / slot.path).is_file():
             raise BlenderError(f"critic {slot.label} missing at {slot.path}; prepare the declared image before judging")
-    descriptions = [critic_images.describe(slots)]
-    panel_index = 0
-    for slot in slots:
-        label = slot.label
-        if slot.role == "focus":
-            panel = panels[panel_index]
-            panel_index += 1
-            label += (
-                f" — id {panel['id']}, axis {panel['axis']}, crop {panel['crop']} within "
-                f"source frame f{panel['source_frame']} against {panel['reference']} "
-                f"(TOP-LEFT normalized), optical res_pct {panel['res_pct']}. "
-                f"It contains aligned CANDIDATE | REFERENCE and a 50/50 wipe. Reason: {panel['reason']}"
-            )
-        elif slot.role == "motion":
-            label += f", frames {motion_frames}"
-        elif slot.role == "prior":
-            label += (
-                f", which scored {prior_mean}. Do NOT score this image. Use it to say whether "
-                "the candidate improved or regressed, and record as a typed observation "
-                "anything the previous attempt got right that the candidate has lost."
-            )
-        descriptions.append(label)
-    return tuple(images), "\n".join(descriptions)
+    return tuple(images)
 
 
 async def _critique(
@@ -147,11 +125,12 @@ async def _critique(
         # window mask is simply not in that image (HIR-0241).
         render_medium=_unit_raster_mode(active_unit),
         focus_frames=sorted(focus_references),
+        prior_present=prior_rel is not None, prior_mean=prior_mean,
     )
 
-    images, descriptions = _critic_images(
+    images = _critic_images(
         shot, m.ref, candidate_rel, focus_panels=focus_panels,
-        motion_rel=motion_rel, motion_frames=motion_frames, prior_rel=prior_rel, prior_mean=prior_mean,
+        motion_rel=motion_rel, prior_rel=prior_rel,
     )
     claims = tuple(claim for claim in getattr(getattr(active_unit, "evaluation", None), "claims", ())
                    if m.frame in claim.moments)
@@ -163,7 +142,7 @@ async def _critique(
 
     observed = await critic_session.execute(
         shot=shot, milestone=m, phase=review_mode,
-        prompt="\n\n".join((CRITIC_SYSTEM, prompt, descriptions)), axes=axes,
+        prompt=replace(prompt, rubric=CRITIC_SYSTEM + "\n\n" + prompt.rubric), axes=axes,
         frames=tuple(sorted(focus_references)) or (m.frame,), images=images, allow_na=scope is None,
         selected_authority=selected_authority, execution_guard=execution_guard,
         claims=claims, check_inputs=check_inputs,

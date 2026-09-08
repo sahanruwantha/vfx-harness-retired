@@ -7,6 +7,12 @@ live in the linked Harness Improvement Records.
 
 ### Added
 
+- Native critic v2 separates the qualified rubric and selected authority from changing
+  candidate observations. Calibration reopens exact context and image identities;
+  observation changes can reuse the same protocol, while scope, rubric or configuration
+  changes require requalification. Old v1 proof is rejected
+  ([HIR-0256](docs/improvements/HIR-0256-qualification-binds-protocol-not-candidate-filenames.md)).
+
 - Native builders share planning's bounded Flynn recipe retrieval. Scope filtering,
   whole-fragment context admission and remaining-path grants prevent retrieval from
   widening permissions or consuming completion capacity. SQLite retains recipe-use

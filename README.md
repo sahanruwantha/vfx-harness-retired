@@ -462,6 +462,10 @@ identity, usage and termination. Only complete selected claim scope with measure
 qualification can authorize its visual verdict. Unqualified opinions are diagnostic and
 cannot pass work or supply autonomous repair instructions. Layer-look and acceptance
 qualification selection remain unfinished migration gates; their obligations are retained.
+Critic v2 records separate the qualified rubric and selected authority from each call's
+observations. Candidate changes preserve their exact context and image provenance;
+rubric, scope or configuration changes still require requalification. Old v1 critic
+proofs cannot authorize v2 calls.
 `VFXH_EXECUTABLE_BUILDER_MODEL` defaults to `DEEPSEEK_MODEL` (or Flynn's vision model).
 `VFXH_EXECUTABLE_BUILDER_SECONDS`, `VFXH_EXECUTABLE_BUILDER_OUTPUT_TOKENS` and
 `VFXH_EXECUTABLE_BUILDER_MAX_STEPS` default to 600, 32768 and 12. Steps include the

@@ -25,7 +25,6 @@ EXPECTED = {
     "agents/acceptance.py": 3,
     "agents/acceptance_stop.py": 2,
     "agents/acceptance_stop_evidence.py": 2,
-    "agents/build_prompts.py": 1,
     "agents/builder/axes.py": 1,
     "agents/builder/critic_focus.py": 3,
     "agents/builder/revalidate.py": 1,

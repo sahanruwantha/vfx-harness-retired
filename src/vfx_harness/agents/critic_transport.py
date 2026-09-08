@@ -20,6 +20,7 @@ from jsonschema import Draft202012Validator
 from PIL import Image
 
 from vfx_harness.agents import critic_images, critic_qualification, image_inputs
+from vfx_harness.domain.critic_prompt import CriticPrompt, protocol_schema_digest
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
 from vfx_harness.domain.work_units.claims import Claim
 from vfx_harness.observability import run_artifacts
@@ -62,7 +63,7 @@ class _StructureEvaluator:
 
 async def execute(
     *, folder: Path, scope_id: str, phase: str, requested_provider: str, requested_model: str,
-    prompt: str, axes: tuple[tuple[str, str], ...], frames: tuple[int, ...],
+    prompt: CriticPrompt, axes: tuple[tuple[str, str], ...], frames: tuple[int, ...],
     images: tuple[tuple[str, str], ...], allow_na: bool,
     inference: flynn.InferenceAdapter, check_current: Callable[[], None],
     qualification_claims: tuple[Claim, ...] = (),
@@ -77,10 +78,12 @@ async def execute(
     it records a trial, never a passed qualification or an accepted claim.
     """
     check_current()
+    if not isinstance(prompt, CriticPrompt):
+        raise ValueError("critic requires a typed rubric and observation record; rebuild the invocation")
     if qualification_claims and calibration_claims:
         raise ValueError("critic calibration and qualification admission are mutually exclusive")
     if any(not isinstance(value, str) or not value.strip()
-           for value in (scope_id, phase, requested_provider, requested_model, prompt)):
+           for value in (scope_id, phase, requested_provider, requested_model)):
         raise ValueError("critic requires nonempty scope, phase, requested provider/model and prompt")
     names = [name for name, _description in axes]
     if (not names or len(set(names)) != len(names)
@@ -93,9 +96,10 @@ async def execute(
     layout = run_artifacts.active(folder)
     if layout is None:
         raise ValueError("native critic requires an active owning VFX run")
+    prompt.validate_images(images)
     snapshots, sources = _snapshot_images(folder, images)
     admission = critic_qualification.Admission(
-        folder, qualification_claims, model=requested_model, prompt=prompt, image_shape=IMAGE_SHAPE,
+        folder, qualification_claims, model=requested_model, prompt=prompt.rubric, image_shape=IMAGE_SHAPE,
         axes=tuple(names), frames=frames,
     ) if qualification_claims else None
     calibration_semantics = critic_qualification.selected_semantics(
@@ -103,9 +107,11 @@ async def execute(
     ) if calibration_claims else []
     calibration_snapshot = critic_qualification.digest([asdict(claim) for claim in calibration_claims])
     scope = {"scope_id": scope_id, "phase": phase, "axes": axes, "frames": frames, "allow_na": allow_na,
-             "claims": admission.semantics if admission else calibration_semantics}
+             "claims": admission.semantics if admission else calibration_semantics,
+             "authority": json.loads(prompt.authority_json)}
     packet = flynn.ContextCompiler(max_characters=MAX_CONTEXT_CHARACTERS).compile((
-        flynn.ContextItem("critic-prompt", prompt, required=True),
+        flynn.ContextItem("critic-rubric", prompt.rubric, required=True),
+        flynn.ContextItem("critic-observation", prompt.observation_json, required=True),
         flynn.ContextItem("critic-scope", json.dumps(scope, sort_keys=True), required=True),
         flynn.ContextItem("image-order", json.dumps(sources, sort_keys=True), required=True),
     ))
@@ -120,16 +126,19 @@ async def execute(
     invocation = f"critic-{uuid4().hex}"
     database = layout.checkpoints / "flynn" / f"{invocation}.sqlite"
     inputs = {
-        "schema": "vfx-harness.critic-inputs/v1", "scope_id": scope_id, "phase": phase,
+        "schema": "vfx-harness.critic-inputs/v2", "scope_id": scope_id, "phase": phase,
         "requested_provider": requested_provider, "requested_model": requested_model,
         "image_shape": IMAGE_SHAPE, "sources": sources,
-        "prompt_sha256": _digest(prompt.encode()), "context_sha256": _digest(packet.text.encode()),
+        "prompt_sha256": _digest(prompt.rubric.encode()),
+        "observation_sha256": _digest(prompt.observation_json.encode()),
+        "context_schema_sha256": protocol_schema_digest(), "context_sha256": _digest(packet.text.encode()),
         "response_schema_sha256": _digest(json.dumps(schema, sort_keys=True).encode()),
         "axes": axes, "frames": frames, "allow_na": allow_na,
         "qualification_sources": admission.references if admission else [],
     }
     invocation_contract = {
-        "schema": "vfx-harness.critic-invocation/v1", "scope": scope,
+        "schema": "vfx-harness.critic-invocation/v2", "scope": scope,
+        "context_schema_sha256": inputs["context_schema_sha256"],
         "prompt_sha256": inputs["prompt_sha256"], "response_schema_sha256": inputs["response_schema_sha256"],
         "image_shape": IMAGE_SHAPE, "accepted_state": EMPTY_STATE,
         "tool": {"name": "submit_verdict", "description": TOOL_DESCRIPTION},
@@ -250,7 +259,7 @@ async def execute(
             validated = True
         finally:
             report = layout.write_report(invocation, {
-                "schema": "vfx-harness.critic-observation/v1", "inputs": inputs,
+                "schema": "vfx-harness.critic-observation/v2", "inputs": inputs,
                 "journal": database.relative_to(layout.root).as_posix(),
                 "usage": run.usage_summary(), "output_budget": asdict(run.output_budget()),
                 "termination": run.outcome(), "inputs_validated_after_inference": validated,

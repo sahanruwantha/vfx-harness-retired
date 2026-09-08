@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2] / 'vfx_harness'
 @pytest.mark.parametrize('path', [
     'agents/critic_session.py', 'agents/critic_transport.py', 'agents/builder/critic.py',
     'agents/builder/critic_focus.py', 'agents/builder/axes.py', 'domain/critic_verdict.py',
+    'agents/critic_rubric.py', 'domain/critic_prompt.py',
 ])
 def test_native_critic_has_no_legacy_transport_import(path):
     tree = ast.parse((ROOT / path).read_text())

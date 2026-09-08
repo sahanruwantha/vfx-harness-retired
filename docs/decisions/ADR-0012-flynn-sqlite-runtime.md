@@ -875,3 +875,27 @@ This is recipe-use telemetry, not permission to mutate or evidence that a recipe
 implemented correctly. No process-global usage list or second recipe log is introduced.
 Independent VFX replay and completion remain necessary. Legacy registration remains
 only for builder paths still awaiting migration; there is no native failure fallback.
+
+### Typed qualification protocol and observation context
+
+Native critic v2 separates the calibrated rubric, selected authority and changing
+observations (HIR-0256). `CriticPrompt` holds immutable canonical JSON. The qualified
+profile retains medium/role instructions, selected target and scope, claim descriptions
+and semantics, context schema, image representation, response schema and dispatched
+provider configuration. Candidate/reference paths, measured values, focus metadata and
+prior scores enter their own required observation context. Source labels and focus
+order must match the actual attached manifest.
+
+The unchanged 24,000-character context cap covers every required section. Inputs bind
+rubric, observation and complete context digests. Independent calibration reopens the
+journal, parses and verifies all typed sections, rechecks image bytes and reproduces
+the profile. Observation changes can reuse that exact profile; rubric or selected
+authority changes cannot. Scope is not silently relegated to mutable observations.
+Old v1 reports/profiles are unsupported and must be requalified. No string replacement
+or legacy fallback infers a protocol from a completed prompt.
+
+This remains a VFX contract. Flynn already provides bounded required context, images,
+configuration identity, neutral usage and durable observations. Offline transport and
+measured-fixture tests prove these mechanisms, not visual quality. One selected
+credential still binds one exact role/frame/image profile; multi-profile selection,
+complete layer/debt/acceptance ownership and reviewed live calibration remain owed.

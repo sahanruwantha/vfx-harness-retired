@@ -165,6 +165,28 @@ def test_report_status_cannot_replace_journal_identity(suite):
         calibration.evaluate(**suite)
 
 
+@pytest.mark.parametrize("change", ["observations", "report_schema", "inputs_schema", "profile_schema"])
+def test_rehashed_observation_or_obsolete_schema_cannot_certify_calibration(suite, change):
+    case = suite["cases"][0]
+    trial = case.trials[0]
+    path = suite["root"] / trial.report
+    report = json.loads(path.read_text())
+    if change == "observations":
+        report["inputs"]["observation_sha256"] = "0" * 64
+    elif change == "report_schema":
+        report["schema"] = "vfx-harness.critic-observation/v1"
+    elif change == "inputs_schema":
+        report["inputs"]["schema"] = "vfx-harness.critic-inputs/v1"
+    else:
+        report["calibration_check"]["profile"]["schema"] = "vfx-harness.critic-invocation/v1"
+    payload = json.dumps(report).encode()
+    path.write_bytes(payload)
+    altered = replace(trial, report_sha256=hashlib.sha256(payload).hexdigest())
+    suite["cases"] = (replace(case, trials=(altered, case.trials[1])), *suite["cases"][1:])
+    with pytest.raises(ValueError, match=r"observations differ|unsupported"):
+        calibration.evaluate(**suite)
+
+
 @pytest.mark.parametrize("change", ["scope", "shape"])
 def test_even_rehashed_report_profile_must_match_recorded_request(suite, change):
     case = suite["cases"][0]

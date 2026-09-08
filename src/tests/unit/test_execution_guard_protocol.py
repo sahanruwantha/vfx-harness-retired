@@ -275,7 +275,8 @@ def test_critic_does_not_retry_a_generic_execution_authority_loss(
     (tmp_path / "renders").mkdir()
     (tmp_path / "refs/f001.png").write_bytes(b"reference")
     (tmp_path / "renders/candidate.png").write_bytes(b"candidate")
-    monkeypatch.setattr(critic_runtime, "critic_prompt", lambda *_args, **_kwargs: "fixture")
+    monkeypatch.setattr(critic_runtime, "critic_prompt",
+                        lambda *_args, **_kwargs: pytest.fail("revoked critic guard reached prompt construction"))
     monkeypatch.setattr(critic_runtime, "_focus_references", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         critic_runtime,

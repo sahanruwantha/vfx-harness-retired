@@ -14,6 +14,7 @@ import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
 from PIL import Image
 
+from vfx_harness.domain.critic_prompt import CriticPrompt, protocol_schema_digest
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
@@ -56,13 +57,18 @@ def _read_trial(root: Path, trial: Trial, invocation: str, claim_id: str) -> dic
     payload = read_real_file(root, report_path, "critic calibration report")
     _require(hashlib.sha256(payload).hexdigest() == trial.report_sha256, "report digest differs")
     report = json.loads(payload)
-    _require(report.get("schema") == "vfx-harness.critic-observation/v1", "report schema is unsupported")
+    _require(report.get("schema") == "vfx-harness.critic-observation/v2", "report schema is unsupported")
     _require(report.get("qualification_verified") is False and report.get("acceptance_authorized") is False,
              "trial asserts qualification or acceptance")
     _require(report.get("inputs_validated_after_inference") is True, "trial did not complete input validation")
     check = report.get("calibration_check", {})
     _require(check.get("status") == "matched_dispatched_configuration", "trial has no verified configuration")
+    _require(report["inputs"].get("schema") == "vfx-harness.critic-inputs/v2",
+             "input schema is unsupported")
     profile = check["profile"]
+    _require(profile.get("schema") == "vfx-harness.critic-invocation/v2" and
+             profile.get("context_schema_sha256") == protocol_schema_digest(),
+             "rubric/observation protocol is unsupported")
     _require(check.get("native_invocation_sha256") == invocation == fingerprint(profile), "invocation differs")
     claims = [claim for claim in profile["scope"]["claims"] if claim["id"] == claim_id]
     _require(len(claims) == 1, "target claim is missing or ambiguous")
@@ -102,12 +108,19 @@ def _read_trial(root: Path, trial: Trial, invocation: str, claim_id: str) -> dic
     suffix = ("\n\n[critic-scope]\n" + json.dumps(scope, sort_keys=True) +
               "\n\n[image-order]\n" + json.dumps(sources, sort_keys=True))
     objective = request["objective"]
-    _require(objective.startswith("[critic-prompt]\n") and objective.endswith(suffix),
+    _require(objective.startswith("[critic-rubric]\n") and objective.endswith(suffix),
              "recorded context differs from scope or image manifest")
-    prompt = objective[len("[critic-prompt]\n"):-len(suffix)]
-    _require(hashlib.sha256(prompt.encode()).hexdigest() == profile["prompt_sha256"] and
+    content = objective[len("[critic-rubric]\n"):-len(suffix)]
+    rubric, separator, observations = content.rpartition("\n\n[critic-observation]\n")
+    _require(bool(separator), "recorded observation section is missing")
+    prompt = CriticPrompt(rubric, observations, json.dumps(scope["authority"], sort_keys=True))
+    prompt.validate_images(tuple((source["role"], source["path"]) for source in sources))
+    _require(prompt.observation_json == observations and
+             hashlib.sha256(rubric.encode()).hexdigest() == profile["prompt_sha256"] and
+             hashlib.sha256(observations.encode()).hexdigest() == report["inputs"]["observation_sha256"] and
+             report["inputs"]["context_schema_sha256"] == protocol_schema_digest() and
              hashlib.sha256(objective.encode()).hexdigest() == report["inputs"]["context_sha256"],
-             "recorded prompt differs")
+             "recorded rubric or observations differ")
     _require(request["base"] == {"revision": 0, "value": profile["accepted_state"]} and
              request["observation"] is None, "trial has unexpected prior state or observation")
     _require(request["allowed_tools"] == ["submit_verdict"] and len(request["tools"]) == 1,

@@ -34,6 +34,9 @@ Native recipe retrieval shares planning's bounded tool. Filter by unit roles, re
 the complete candidate path before granting a read, and admit whole fragments only
 when required context still fits. Replace feedback and retain use/digest telemetry
 in SQLite. Verification cannot create a query match (HIR-0255).
+Critic v2 qualification binds rubric and selected authority separately from candidate
+observations. Preserve exact observation/context digests and source verification;
+old v1 proof cannot authorize v2 admission (HIR-0256).
 
 Treat the Claude Agent SDK as a production runtime, not merely prompt transport. Inspect the
 installed SDK before building custom orchestration and prefer its strongest applicable native

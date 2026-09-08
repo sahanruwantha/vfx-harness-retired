@@ -34,9 +34,3 @@ def compile_images(images: tuple[tuple[str, str], ...]) -> tuple[CriticImage, ..
             label = labels[role]
         result.append(CriticImage(role, path, label))
     return tuple(result)
-
-
-def describe(images: tuple[CriticImage, ...]) -> str:
-    return "ATTACHED IMAGE ORDER:\n" + "\n".join(
-        f"Image {index}: {image.label} ({image.path})" for index, image in enumerate(images, 1)
-    )

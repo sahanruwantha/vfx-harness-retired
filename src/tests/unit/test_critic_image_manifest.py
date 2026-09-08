@@ -24,21 +24,24 @@ def test_prompt_and_attachments_agree_when_focus_precedes_motion(tmp_path, monke
     for path in paths:
         (tmp_path / path).write_bytes(b"fixture")
     shot = SimpleNamespace(folder=tmp_path, id="fixture")
-    images, description = critic._critic_images(
+    images = critic._critic_images(
         shot, paths[0], paths[1], focus_panels=panels, motion_rel="motion.png",
-        motion_frames=[5, 7, 9], prior_rel="prior.png", prior_mean=3,
+        prior_rel="prior.png",
     )
+    slots = critic_images.compile_images(images)
     assert [path for _role, path in images] == paths
-    assert f"Image {3 + focus_count}: MOTION STRIP (motion.png)" in description
-    assert "PREVIOUS ATTEMPT — CONTEXT ONLY" in description
-    assert "Do NOT score this image" in description
-    assert "MOTION STRIP, frames [5, 7, 9]" in description
+    assert (slots[2 + focus_count].label, slots[2 + focus_count].path) == ("MOTION STRIP", "motion.png")
+    assert slots[-1].label == "PREVIOUS ATTEMPT — CONTEXT ONLY"
     prompt = build_prompts.critic_prompt(
         shot, Milestone("surface", 7, paths[0], "form"), paths[1], [("form", "Visible form")],
-        motion_rel="motion.png", motion_frames=[5, 7, 9], focus_panels=panels,
+        motion_rel="motion.png", motion_frames=[5, 7, 9], focus_panels=panels, prior_present=True, prior_mean=3,
     )
-    assert "image labelled MOTION STRIP" in prompt
-    assert "THIRD" not in prompt
+    assert "Do NOT score this image" in prompt.rubric
+    assert "image labelled MOTION STRIP" in prompt.rubric
+    assert "THIRD" not in prompt.rubric
+    if focus_count:
+        assert "50/50 wipe" in prompt.rubric
+        assert "TOP-LEFT coordinates in source_frame" in prompt.rubric
 
 
 @pytest.mark.parametrize("missing", ["motion", "prior", "focus"])

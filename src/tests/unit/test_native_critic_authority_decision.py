@@ -8,6 +8,7 @@ import pytest
 
 from tests.contract.test_flynn_critic_transport import verdict
 from vfx_harness.agents.builder import critic
+from vfx_harness.domain.critic_prompt import CriticPrompt
 from vfx_harness.domain.work_units.claims import Claim
 from vfx_harness.orchestration.ledger import Milestone
 
@@ -27,10 +28,12 @@ def test_only_complete_selected_and_admitted_scope_can_pass(tmp_path, monkeypatc
     unit = SimpleNamespace(evaluation=SimpleNamespace(claims=(claim,))) if gap != 'layer' else None
     monkeypatch.setattr(critic, '_focus_references', lambda *a, **k: {7: 'reference.png'})
     monkeypatch.setattr(critic, '_claim_context', lambda *a, **k: ([], {'form': frozenset({'form-v1'})}, set()))
-    monkeypatch.setattr(critic, '_critic_images', lambda *a, **k: ((), 'fixture images'))
-    monkeypatch.setattr(critic, 'critic_prompt', lambda *a, **k: 'fixture rubric')
+    monkeypatch.setattr(critic, '_critic_images', lambda *a, **k: ())
+    monkeypatch.setattr(critic, 'critic_prompt', lambda *a, **k: CriticPrompt('fixture rubric'))
 
     async def observed(**kwargs):
+        assert isinstance(kwargs['prompt'], CriticPrompt)
+        assert kwargs['images'] == ()
         assert kwargs['claims'] == ((claim,) if unit else ())
         return {'verdict': verdict(), 'qualification_verified': gap != 'unverified',
                 'qualified_claim_ids': [] if gap == 'missing_claim' else ['form'],

@@ -14,6 +14,7 @@ from flynn_agents_sdk import deepseek
 from PIL import Image
 
 from vfx_harness.agents import critic_transport
+from vfx_harness.domain.critic_prompt import CriticPrompt
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.plan_bundle_integrity import PlanPublicationError
 
@@ -46,7 +47,7 @@ def invoke(layout, handler, *, check=lambda: None, **updates):
     arguments = {
         "folder": layout.shot, "scope_id": "layer:surface", "phase": "observer",
         "requested_provider": "deepseek", "requested_model": deepseek.VISION_MODEL,
-        "prompt": "Judge the supplied reference and candidate on the declared form axis.",
+        "prompt": CriticPrompt("Judge the supplied reference and candidate on the declared form axis."),
         "axes": (("form", "Visible form"),), "frames": (7,), "allow_na": False,
         "images": (("reference", "reference.png"), ("candidate", "candidate.png"), ("focus", "focus.png")),
         "check_current": check,
@@ -164,7 +165,7 @@ def test_scripted_critic_never_claims_model_identity(bound):
     result = asyncio.run(critic_transport.execute(
         folder=bound.shot, scope_id="scripted", phase="observer",
         requested_provider="deepseek", requested_model=deepseek.VISION_MODEL,
-        prompt="Offline structured opinion fixture.", axes=(("form", "Visible form"),),
+        prompt=CriticPrompt("Offline structured opinion fixture."), axes=(("form", "Visible form"),),
         frames=(7,), images=(("reference", "reference.png"), ("candidate", "candidate.png")),
         allow_na=False, check_current=lambda: None,
         inference=flynn.ScriptedAdapter([flynn.ToolCall("submit_verdict", json.dumps(verdict()))]),
@@ -254,7 +255,7 @@ def test_interrupted_inference_is_durable_without_retry(bound, failure):
 def test_invalid_required_inputs_refuse_before_inference_or_journal(bound, failure):
     updates = {}
     if failure == "oversized":
-        updates["prompt"] = "x" * critic_transport.MAX_CONTEXT_CHARACTERS
+        updates["prompt"] = CriticPrompt("x" * critic_transport.MAX_CONTEXT_CHARACTERS)
     elif failure == "image":
         (bound.shot / "candidate.png").unlink()
         (bound.shot / "candidate.png").symlink_to("reference.png")

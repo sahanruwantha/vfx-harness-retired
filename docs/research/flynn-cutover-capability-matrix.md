@@ -26,7 +26,8 @@ VFX installs SDK main `189a4776559a09120111f6557ee14731993874c6` over SSH.
 | Builder recipe retrieval | Native structured tool transport and required-context compiler | Planning and native builders share bounded retrieval; exact unit roles, context admission, complete-path grants and SQLite fragment-use telemetry | Remove legacy registration after qualitative/simplify callers migrate; retain scope, reread, context-overflow and canonical-path budget checks |
 | Logging, configuration, installation and preflight | Provider-neutral usage/identity/termination, known/unknown/not-applicable accounting | Native failure causes and exact inherited stop propagation are preserved; session reports coexist with legacy configuration | Remove remaining Claude integration; provide phase-specific recovery contracts where needed; verify fresh install, provider preflight and honest usage reporting |
 
-The shared critic checkpoint passed all 3,553 regression tests. An AST inventory still
+The shared critic transport checkpoint passed all 3,553 regression tests; the typed
+v2 protocol checkpoint passed all 3,616 tests (HIR-0256). An AST inventory still
 finds 24 production modules importing the Claude SDK, concentrated in the remaining
 builder loops/options/drain/facade, tool servers, hook adapters and message logger.
 This is a remaining-dependency count, not a count of active agent roles.
@@ -59,12 +60,11 @@ Complete production qualification selection remains owed:
 - Calibrate the actual role prompt, images and provider configuration. Observer, focus,
   evidence-audit and tie-breaker invocations cannot silently inherit each other's proof,
   nor the historical Claude noise measurement. Missing admission refuses the invocation.
-- The current exact prompt fingerprint includes candidate basenames and dynamic
-  evidence values. Define a typed qualification protocol separating its calibrated
-  rubric from variable observations before expecting one credential to work across
-  probe and canonical replay. Preserve exact per-invocation context provenance;
-  dropping fingerprints or normalizing arbitrary prompt text is not a qualification
-  mechanism.
+- Native v2 qualification separates the calibrated rubric and selected authority from
+  candidate observations. Exact observation/context and image identities remain
+  independently verified. One credential still binds one role/frame/image profile;
+  complete multi-profile selection remains required for panels and multiple moments.
+  Old v1 proofs require requalification, not text normalization or edited hashes.
 - Prove qualified live judgments with reviewed controls; fixture passes are not model
   qualification. Unqualified layer/acceptance opinions currently remain unresolved.
 
@@ -102,3 +102,24 @@ require ARC testing. No session may fall back to another runtime after native fa
   fixture does not prove visual quality. Do not manufacture labels or human review.
 
 The goal stays active across intermediate commits until this evidence exists.
+
+## Next qualification selection contract
+
+Current-state inspection finds two callers of the single-artifact qualification
+validator: selected-layer loading in `orchestration/ledger.py` and native admission
+in `agents/critic_qualification.py`. The claim currently stores one `prompt`, and
+publication derives one `native_invocation_sha256`. That cannot select independently
+measured observer, focus, evidence-audit, tie-breaker and per-frame profiles.
+
+The next implementation should bind one immutable measured profile set to the exact
+claim semantics. Each member must retain its own suite request, independent evaluation
+and complete source proof. Runtime selection must match the actual profile digest
+exactly; missing, duplicate or substituted members must refuse before inference.
+Publication and binding remain VFX authority operations, with no model-selected profile
+or implied calibration. Replace the obsolete single-prompt claim contract explicitly,
+rather than assigning its field a new hidden meaning. Move qualification file reads
+out of the domain parser into the owning adapter while changing those two consumers;
+the domain should validate record values, not open proof files.
+
+This is pending implementation. It does not make the current v2 protocol checkpoint
+multi-profile, and reviewed real controls plus live qualification remain necessary.

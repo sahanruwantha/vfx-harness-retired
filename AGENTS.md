@@ -268,6 +268,12 @@ operation.
   SQLite records recipe use and content identity without a process-global usage list.
   Verification improves a relevant recipe's rank; it never creates a query match
   (ADR-0012, HIR-0255).
+- Native critic qualification binds the rubric, selected target/scope and claim
+  descriptions, context schema, image representation and dispatched configuration.
+  Candidate observations have separate exact digests in v2 records; calibration must
+  reopen their journal context and image sources. Never normalize rendered prompt
+  strings, move authority into unbound observations, or reuse v1 proof as v2 admission
+  (ADR-0012, HIR-0256).
 - The production dispatcher selects the native Flynn executor for procedural or generated solid or EEVEE
   image contracts with required executable claims covering every judge frame. Capture
   and payment invalidate the prior probe; freeze and canonical dispatch reopen payment
