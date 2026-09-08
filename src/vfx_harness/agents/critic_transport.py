@@ -1,13 +1,14 @@
 """Native Flynn observation transport for one VFX critic decision.
 
-This records a structured opinion, not qualified judgment or acceptance. The owning
-VFX caller supplies current authority checks and must establish qualification before
-using an observation to decide production work. No legacy model transport is imported.
+This records a structured opinion and can admit explicitly selected artifact-backed
+qualification. The owning VFX caller derives those claims and current authority checks;
+domain reconciliation and acceptance remain separate. No legacy transport is imported.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from collections.abc import Callable
 from dataclasses import asdict, replace
@@ -16,9 +17,11 @@ from uuid import uuid4
 
 import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
+from PIL import Image
 
-from vfx_harness.agents import critic_images, image_inputs
+from vfx_harness.agents import critic_images, critic_qualification, image_inputs
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
+from vfx_harness.domain.work_units.claims import Claim
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
 from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
@@ -26,6 +29,8 @@ from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 MAX_CONTEXT_CHARACTERS = 24000
 LIMITS = flynn.RunLimits(1, 1, 0, 180, output_tokens=8192)
 IMAGE_SHAPE = "vfx-harness.critic-images/v2"
+EMPTY_STATE = "Observation-only critic; no accepted VFX state."
+TOOL_DESCRIPTION = "Submit a structured visual opinion; this does not accept VFX work."
 
 
 def _digest(payload: bytes) -> str:
@@ -36,9 +41,13 @@ def _snapshot_images(folder: Path, images: tuple[tuple[str, str], ...]):
     """Closed image slots preserve identity/order without an accumulated history."""
     snapshots, sources = [], []
     for index, slot in enumerate(critic_images.compile_images(images)):
-        snapshot, identity = image_inputs.snapshot_image(folder, slot.path)
+        payload = read_real_file(folder, folder / slot.path, "critic image source")
+        snapshot, identity = image_inputs.snapshot_image_payload(payload, slot.path)
+        with Image.open(io.BytesIO(payload)) as source_image:
+            shape = {"size": list(source_image.size), "mode": source_image.mode,
+                     "frame_count": getattr(source_image, "n_frames", 1)}
         snapshots.append(snapshot)
-        sources.append({**identity, "role": slot.role, "label": slot.label, "image_index": index,
+        sources.append({**identity, **shape, "role": slot.role, "label": slot.label, "image_index": index,
                         "input_sha256": _digest(snapshot.url.encode())})
     return tuple(snapshots), tuple(sources)
 
@@ -47,7 +56,7 @@ class _StructureEvaluator:
     async def evaluate(self, candidate):
         return flynn.Evaluation(
             candidate, "vfx-critic-response-structure/v1", "closed verdict structure only",
-            flynn.Verdict.SATISFIED, "model opinion; qualification and VFX acceptance are not established",
+            flynn.Verdict.SATISFIED, "structure evaluation grants no qualification or VFX acceptance",
         )
 
 
@@ -56,6 +65,7 @@ async def execute(
     prompt: str, axes: tuple[tuple[str, str], ...], frames: tuple[int, ...],
     images: tuple[tuple[str, str], ...], allow_na: bool,
     inference: flynn.InferenceAdapter, check_current: Callable[[], None],
+    qualification_claims: tuple[Claim, ...] = (),
 ) -> dict:
     """Record one bounded opinion; refusals/errors propagate without retry or fallback.
 
@@ -79,8 +89,15 @@ async def execute(
     if layout is None:
         raise ValueError("native critic requires an active owning VFX run")
     snapshots, sources = _snapshot_images(folder, images)
+    admission = critic_qualification.Admission(
+        folder, qualification_claims, model=requested_model, prompt=prompt, image_shape=IMAGE_SHAPE,
+        axes=tuple(names), frames=frames,
+    ) if qualification_claims else None
+    scope = {"scope_id": scope_id, "phase": phase, "axes": axes, "frames": frames, "allow_na": allow_na,
+             "claims": admission.semantics if admission else []}
     packet = flynn.ContextCompiler(max_characters=MAX_CONTEXT_CHARACTERS).compile((
         flynn.ContextItem("critic-prompt", prompt, required=True),
+        flynn.ContextItem("critic-scope", json.dumps(scope, sort_keys=True), required=True),
         flynn.ContextItem("image-order", json.dumps(sources, sort_keys=True), required=True),
     ))
     schema = critic_verdict_schema(list(axes), allow_na=allow_na, focus_frames=list(frames))
@@ -100,13 +117,27 @@ async def execute(
         "prompt_sha256": _digest(prompt.encode()), "context_sha256": _digest(packet.text.encode()),
         "response_schema_sha256": _digest(json.dumps(schema, sort_keys=True).encode()),
         "axes": axes, "frames": frames, "allow_na": allow_na,
+        "qualification_sources": admission.references if admission else [],
     }
+    invocation_contract = {
+        "schema": "vfx-harness.critic-invocation/v1", "scope": scope,
+        "prompt_sha256": inputs["prompt_sha256"], "response_schema_sha256": inputs["response_schema_sha256"],
+        "image_shape": IMAGE_SHAPE, "accepted_state": EMPTY_STATE,
+        "tool": {"name": "submit_verdict", "description": TOOL_DESCRIPTION},
+        "images": [{"role": source["role"], "label": source["label"], "detail": snapshot.detail,
+                    "mime": snapshot.url.split(";", 1)[0], "size": source["size"], "mode": source["mode"],
+                    "frame_count": source["frame_count"]}
+                   for source, snapshot in zip(sources, snapshots, strict=True)],
+    }
+    qualification_check = {"status": "not_requested" if admission is None else "pending"}
 
     def current():
         check_current()
         active = run_artifacts.active(folder)
         if active is None or active.root != layout.root:
             raise ValueError("native critic owning run changed; observation cannot be consumed")
+        if admission is not None:
+            admission.check()
         for source in sources:
             payload = read_real_file(folder, folder / source["path"], "critic image source")
             if _digest(payload) != source["sha256"]:
@@ -114,7 +145,26 @@ async def execute(
 
     def prepare(request):
         current()
-        return replace(request, images=snapshots)
+        prepared = replace(request, images=snapshots, max_output_tokens=LIMITS.output_tokens)
+        if admission is not None:
+            if not isinstance(inference, flynn.ConfiguredInference):
+                raise ValueError(
+                    "qualified critic requires a configuration-reporting model adapter; scripted cannot qualify"
+                )
+            configuration = inference.configuration(prepared)
+            if not isinstance(configuration, flynn.InferenceConfiguration):
+                raise ValueError("critic adapter must return an InferenceConfiguration")
+            if len(configuration.settings_json) > MAX_CONTEXT_CHARACTERS:
+                raise ValueError(
+                    "critic provider settings exceed bounded context; shorten and requalify the configuration"
+                )
+            if (configuration.provider, configuration.model) != (requested_provider, requested_model):
+                raise ValueError("critic configured provider/model differs from selected qualification")
+            profile = invocation_contract | {"configuration": asdict(configuration)}
+            qualification_check.update(profile=profile, configuration_sha256=configuration.sha256)
+            admission.admit(profile)
+            qualification_check["status"] = "admitted_before_inference"
+        return prepared
 
     model_identity = {"status": "unverified"}
 
@@ -131,6 +181,8 @@ async def execute(
                               provider=usage["provider"], requested_model=usage["model"],
                               response_model=usage.get("response_model"))
         if usage["kind"] == "scripted":
+            if admission is not None:
+                raise ValueError("scripted critic observations cannot satisfy model qualification")
             model_identity["status"] = "not_applicable"
         else:
             expected = (requested_provider, requested_model, requested_model)
@@ -141,6 +193,12 @@ async def execute(
                     "preserve this observation attempt and qualify the intended model before retrying"
                 )
             model_identity["status"] = "matched"
+        if admission is not None:
+            if usage.get("configuration_sha256") != qualification_check["configuration_sha256"]:
+                raise ValueError(
+                    "critic dispatched configuration differs from qualification; preserve spending and requalify"
+                )
+            qualification_check["status"] = "matched_dispatched_configuration"
         return flynn.GuardDecision(True, "current critic inputs and recorded inference identity checked")
 
     async def submit(arguments):
@@ -148,20 +206,20 @@ async def execute(
         return flynn.ToolResult(data_json=json.dumps(arguments, sort_keys=True))
 
     tool = flynn.Tool.structured(
-        "submit_verdict", description="Submit a structured visual opinion; this does not accept VFX work.",
+        "submit_verdict", description=TOOL_DESCRIPTION,
         parameters_json=json.dumps(schema), validate=validate, execute=submit,
     )
     current()
     durably_ensure_real_directory(folder, database.parent.relative_to(folder))
     with flynn.SQLiteRun.create(
-        database, run_id=invocation, initial_state=json.dumps(inputs, sort_keys=True), limits=LIMITS,
+        database, run_id=invocation, initial_state=EMPTY_STATE, limits=LIMITS,
     ) as run:
         session = flynn.Session(
             inference=inference, tools=flynn.ToolBroker([tool]), evaluator=_StructureEvaluator(), run=run,
             grants=("submit_verdict",), prepare_request=prepare,
             guards=(flynn.DispatchGuard("current-vfx-critic-inputs", guard),),
             policy=lambda view: (
-                flynn.SessionStop("structured critic observation recorded; no qualification or acceptance")
+                flynn.SessionStop("structured critic observation recorded; no VFX acceptance")
                 if view.completed_steps else flynn.SessionStep(packet.text, ("submit_verdict",))
             ),
         )
@@ -180,9 +238,12 @@ async def execute(
                 "usage": run.usage_summary(), "output_budget": asdict(run.output_budget()),
                 "termination": run.outcome(), "inputs_validated_after_inference": validated,
                 "model_identity": model_identity,
-                "acceptance_authorized": False, "qualification_verified": False, "pricing_status": "unpriced",
+                "qualification_check": qualification_check,
+                "acceptance_authorized": False, "qualification_verified": bool(admission) and validated,
+                "pricing_status": "unpriced",
             })
         current()
         return {"verdict": verdict, "report": report.relative_to(folder).as_posix(),
                 "report_sha256": _digest(read_real_file(folder, report, "critic observation report")),
-                "acceptance_authorized": False, "qualification_verified": False}
+                "acceptance_authorized": False, "qualification_verified": bool(admission) and validated,
+                "qualified_claim_ids": [claim.id for claim in qualification_claims]}

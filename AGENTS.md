@@ -635,9 +635,19 @@ For model calls, it checks the exact operation's durable provider, requested mod
 provider-reported response model before submitting a verdict; missing or different identity
 refuses without discarding spending. Scripted observations explicitly have no model identity.
 Matching reported identity does not prove model weights or establish judge qualification.
-Do not route that opinion into production acceptance until the owning harness verifies
-qualification against the actual invocation. The transport's successful session and
-schema assessment authorize no state commit, retry or layer completion (ADR-0012).
+Native qualification admission is opt-in through parsed claims derived by the owning
+harness from current selected authority. Each claim must bind its exact passed, hash-pinned
+qualification artifact and `native_invocation_sha256`. Check the exact prompt, scope/claim
+semantics, response tool/schema, image roles/format/dimensions/mode/frame count/detail and
+effective provider configuration before inference; compare the configuration fingerprint
+recorded from the dispatched payload before consuming the verdict. Reopen qualification
+sources and check claim immutability through return. Scripted/unreported configuration,
+implicit layer-look claims and synthetic debt claims cannot invent qualification.
+Scope facts and claim semantics belong in required bounded context, not an unbounded SDK
+state payload. A qualification-verified observation grants no state commit, retry or layer
+completion; the production wrapper must still derive complete owned qualification and
+retain VFX reconciliation and receipt acceptance. Offline admission fixtures do not
+qualify a live model (ADR-0012).
 The executable Flynn builder grants initial scene inspection at most once and only before
 writing a candidate. Candidate replay supplies subsequent scene evidence. VFX transports
 explicit execution phase alongside bounded selected feedback; repeated unchanged initial

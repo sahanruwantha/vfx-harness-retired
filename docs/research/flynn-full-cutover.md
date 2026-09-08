@@ -1188,3 +1188,44 @@ Validation: all 57 focused critic, medium-rubric and execution-guard tests passe
 6.49 seconds. The frozen-source full suite passed all 3,437 tests (850 + 850 + 869 +
 868), with 84 existing Pillow deprecation warnings; the longest process took 1,000.14
 seconds. Complete-source Ruff and final diff checks passed. No paid inference was used.
+
+## Explicit native qualification admission
+
+Native critic execution can now admit selected parsed qualification claims. It verifies
+their exact source artifacts, existing error-rate budgets and suite bindings, then checks
+their new `native_invocation_sha256` against the actual invocation before reserving
+inference. Old artifacts without that binding refuse native admission. Unqualified
+observation mode remains available for diagnostics/calibration, with no claimed authority.
+
+The fingerprint includes full prompt text, ordered scope and claim semantics, response
+schema/tool description, and image role/layout, format, dimensions, colour mode, frame
+count and detail. Scope and claim facts enter bounded required context instead of being
+smuggled into the model through the SDK's unbounded initial audit state. The initial SDK
+state is now a fixed observation-only marker. Exact image source hashes are checked
+separately, allowing different pixels within the same qualified protocol.
+
+SDK main `189a4776559a09120111f6557ee14731993874c6` adds a pure configuration description
+and durable fingerprint derived from the actual dispatched payload. VFX binds provider
+system instructions, thinking/effort and output ceilings before spend, then compares that
+actual fingerprint before consuming a verdict. Tests change settings between admission
+and dispatch and restore them afterward: the journal still exposes the substituted
+configuration, the verdict refuses, and spending is preserved. The SDK also preserves
+requested model identity from the dispatched payload if adapter fields later change.
+
+The SDK's 218 tests and strict type/lint checks passed; the strengthened journal and
+configuration checks passed 28 tests. Both consumers installed the pushed commit over
+SSH. ARC's required offline gate passed 542 tests in 116.59 seconds, and its updated lock
+was preserved alongside existing work.
+
+Selected qualification is an artifact admission check, not a new calibration result or
+proof that an observed claim passed. Implicit layer-look/debt placeholders refuse this
+API. Production routing still needs an owning wrapper that derives complete qualification
+from selected authority, a calibrated native artifact for that invocation, and
+the existing VFX evidence reconciliation and receipt acceptance. No live model was
+qualified or invoked by the fixture tests, and the production critic is not switched.
+
+Validation: 87 focused checks passed in 9.79 seconds. The finalized-source full VFX
+suite passed all 3,467 tests (858 + 857 + 876 + 876), with 84 existing Pillow warnings;
+the longest process took 1,075.06 seconds. An earlier full run was deliberately stopped
+to add image dimensions/mode/frame-count binding, then replaced by this complete run.
+Complete-source Ruff and final diff checks passed. No paid inference was used.

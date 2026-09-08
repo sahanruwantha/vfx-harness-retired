@@ -527,13 +527,13 @@ Cancellation and provider failures propagate with their durable spending/termina
 Reports bind the requested prompt/context/response schema and image identities to the journal,
 whose usage records carry requested and provider-reported model identity separately.
 Neither a schema-valid opinion nor either identity is
-qualification: reports and returned results explicitly set `qualification_verified` and
-`acceptance_authorized` false.
+qualification. Without explicit selected qualification claims, reports and results set
+`qualification_verified` false. `acceptance_authorized` is always false.
 
 This is a native transport capability, not a production critic switch. The existing
-qualification reader compares artifact fields to claim fields; runtime critic invocation
-does not compare its actual model, prompt and evidence shape to those fields. A production
-switch must close that gap, including the composed layer's independent look judgment.
+qualification reader compares artifact fields to claim fields. The native admission
+described below additionally binds explicit selected claims to the invocation. A production
+switch must supply complete owning qualification, including the composed layer's independent look judgment.
 Reusing a previous model's qualification implicitly is not an allowed migration mechanism.
 
 ### Reported model identity admission
@@ -549,8 +549,8 @@ guard selects the one usage row for the exact operation and compares provider, r
 model and response model to those intended inputs. Unknown or different identity refuses
 before verdict submission, with inference usage and termination retained. Scripted
 observations are explicitly `not_applicable`; they never claim a matched model.
-The report records this check separately from qualification and acceptance, which remain
-false. There is no alias inference or automatic retry. The SDK owns identity transport;
+The report records this check separately from qualification admission and acceptance.
+There is no alias inference or automatic retry. The SDK owns identity transport;
 VFX owns the equality policy and the eventual qualification decision.
 
 ### Critic image manifest
@@ -570,3 +570,45 @@ position and verified byte identities in required context and the durable input 
 Its actual attached URL order is tested against those identities. This changes the
 evidence representation that qualification must cover, and grants no qualification or
 acceptance. No engine route or receipt authority changes.
+
+### Native qualification admission
+
+The owning harness may supply `qualification_claims` to native critic execution. These
+must be distinct parsed claims selected from current authority, within the invocation's
+axes and judge-frame scope. Each must bind its exact qualification suite and a passed,
+hash-pinned schema-1 artifact satisfying the existing five error-rate budgets. The native
+path additionally requires `native_invocation_sha256`; absence refuses, with no historical
+default that could authorize native use. Model, prompt SHA-256 and image-shape generation
+must match the claim's declared qualification as well as its artifact.
+
+The `vfx-harness.critic-invocation/v1` fingerprint covers the exact prompt, ordered scope
+and claim semantics, axes/frames/review mode, response tool description and schema,
+fixed observation-only SDK state, and each image's role/label, media type, dimensions,
+colour mode, frame count and requested detail. Actual image pixels may vary between
+calibration cases and judgments, but their source bytes remain independently guarded.
+This is exact invocation admission, not a claim that a different rendered prompt or
+claim proposition inherits a broad prompt-template qualification.
+
+Flynn's optional `ConfiguredInference` capability describes effective settings without
+dispatch. The native gate binds that configuration (including provider system instruction,
+thinking/effort and output ceiling) to the qualification before inference reservations.
+The SDK fingerprints the configuration derived from the actual dispatched payload in
+immutable usage records, including failed/rejected calls. The VFX dispatch guard compares
+that fingerprint before verdict submission; copying preflight metadata or restoring a
+changed adapter setting afterward cannot pass this comparison. Missing metadata refuses.
+This SDK capability records transport identity; qualification policy remains VFX-owned.
+
+Qualification artifacts and selected claim values remain unchanged through consumption.
+Scripted adapters and implicit layer/debt placeholders cannot qualify. Successful explicit
+admission marks `qualification_verified` and returns the admitted claim ids; it neither
+declares those claims passed nor grants VFX acceptance. The owning production wrapper must
+still derive the correct claims, reconcile evidence and panel citations, and satisfy its
+receipt-backed domain acceptance. No production critic engine route changes here.
+
+All scope/claim facts now enter required context under the 24,000-character cap. The SDK
+initial state is a fixed observation-only marker rather than a second unbounded copy of
+audit inputs; audit metadata remains in the VFX report and the request in SQLite. Qualified
+provider settings have a separate 24,000-character cap. There is still one inference and
+one verdict submission, no state commit, and no automatic retry. Reports preserve failed
+admission and spending after dispatch separately. Fixture qualification artifacts test
+these checks; they are not live-model calibration evidence.
