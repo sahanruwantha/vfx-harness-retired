@@ -627,6 +627,10 @@ the replay closure separately binds the script; a script digest cannot stand in 
 render (HIR-0253).
 Native critic transport records a structured observation only. Its requested model,
 prompt/context/schema digests and image identities are provenance, never qualification.
+Critic image labels and attachment order derive from the shared bounded image manifest.
+Never describe a motion strip by a fixed ordinal, silently truncate focus panels, or
+drop a declared missing motion/prior image. Native image shape v2 binds these labels
+to the exact image inputs and cannot inherit qualification for the previous layout.
 For model calls, it checks the exact operation's durable provider, requested model and
 provider-reported response model before submitting a verdict; missing or different identity
 refuses without discarding spending. Scripted observations explicitly have no model identity.

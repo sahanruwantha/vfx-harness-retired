@@ -17,7 +17,7 @@ from uuid import uuid4
 import flynn_agents_sdk as flynn
 from jsonschema import Draft202012Validator
 
-from vfx_harness.agents import image_inputs
+from vfx_harness.agents import critic_images, image_inputs
 from vfx_harness.domain.critic_verdict import critic_verdict_schema
 from vfx_harness.observability import run_artifacts
 from vfx_harness.orchestration.authority_selection_transaction import durably_ensure_real_directory
@@ -25,7 +25,7 @@ from vfx_harness.orchestration.plan_bundle_integrity import read_real_file
 
 MAX_CONTEXT_CHARACTERS = 24000
 LIMITS = flynn.RunLimits(1, 1, 0, 180, output_tokens=8192)
-IMAGE_SHAPE = "vfx-harness.critic-images/v1"
+IMAGE_SHAPE = "vfx-harness.critic-images/v2"
 
 
 def _digest(payload: bytes) -> str:
@@ -34,17 +34,11 @@ def _digest(payload: bytes) -> str:
 
 def _snapshot_images(folder: Path, images: tuple[tuple[str, str], ...]):
     """Closed image slots preserve identity/order without an accumulated history."""
-    roles = [role for role, _path in images]
-    if roles[:2] != ["reference", "candidate"]:
-        raise ValueError("critic images must begin with reference then candidate")
-    limits = {"reference": 1, "candidate": 1, "focus": 2, "motion": 1, "prior": 1}
-    if any(role not in limits or roles.count(role) > limits[role] for role in roles):
-        raise ValueError("critic permits reference, candidate, at most two focus panels, one motion and one prior")
     snapshots, sources = [], []
-    for index, (role, path) in enumerate(images):
-        snapshot, identity = image_inputs.snapshot_image(folder, path)
+    for index, slot in enumerate(critic_images.compile_images(images)):
+        snapshot, identity = image_inputs.snapshot_image(folder, slot.path)
         snapshots.append(snapshot)
-        sources.append({**identity, "role": role, "image_index": index,
+        sources.append({**identity, "role": slot.role, "label": slot.label, "image_index": index,
                         "input_sha256": _digest(snapshot.url.encode())})
     return tuple(snapshots), tuple(sources)
 

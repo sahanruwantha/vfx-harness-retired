@@ -6,6 +6,7 @@ from claude_agent_sdk import (
     query,
 )
 
+from vfx_harness.agents import critic_images
 from vfx_harness.agents.build_prompts import (
     critic_prompt,
 )
@@ -42,6 +43,47 @@ from vfx_harness.observability.log import (
 )
 from vfx_harness.orchestration import authority_selection
 from vfx_harness.orchestration.ledger import Milestone
+
+
+def _critic_image_blocks(
+    shot: Shot, reference: str, candidate: str, *, focus_panels=None,
+    motion_rel=None, motion_frames=None, prior_rel=None, prior_mean=None,
+) -> list[dict]:
+    """Attach the complete declared manifest, or refuse before querying the critic."""
+    panels = focus_panels or []
+    images = [("reference", reference), ("candidate", candidate)]
+    images.extend(("focus", panel["image_rel"]) for panel in panels)
+    if motion_rel is not None:
+        images.append(("motion", motion_rel))
+    if prior_rel is not None:
+        images.append(("prior", prior_rel))
+    slots = critic_images.compile_images(tuple(images))
+    for slot in slots:
+        if not (shot.folder / slot.path).is_file():
+            raise BlenderError(f"critic {slot.label} missing at {slot.path}; prepare the declared image before judging")
+    blocks = [{"type": "text", "text": critic_images.describe(slots)}]
+    panel_index = 0
+    for slot in slots:
+        label = slot.label
+        if slot.role == "focus":
+            panel = panels[panel_index]
+            panel_index += 1
+            label += (
+                f" — id {panel['id']}, axis {panel['axis']}, crop {panel['crop']} within "
+                f"source frame f{panel['source_frame']} against {panel['reference']} "
+                f"(TOP-LEFT normalized), optical res_pct {panel['res_pct']}. "
+                f"It contains aligned CANDIDATE | REFERENCE and a 50/50 wipe. Reason: {panel['reason']}"
+            )
+        elif slot.role == "motion":
+            label += f", frames {motion_frames}"
+        elif slot.role == "prior":
+            label += (
+                f", which scored {prior_mean}. Do NOT score this image. Use it to say whether "
+                "the candidate improved or regressed, and record as a typed observation "
+                "anything the previous attempt got right that the candidate has lost."
+            )
+        blocks.extend(({"type": "text", "text": label}, _image_block(shot.folder / slot.path)))
+    return blocks
 
 
 async def _critique(
@@ -117,55 +159,10 @@ async def _critique(
         focus_frames=sorted(focus_references),
     )
 
-    # ATTACH the images instead of asking an agent to fetch them. A missing file is now a
-    # loud failure here rather than a confident score on a frame that was never seen.
-    ref_abs, cand_abs = shot.folder / m.ref, shot.folder / candidate_rel
-    for p, what in ((ref_abs, "reference"), (cand_abs, "candidate render")):
-        if not p.is_file():
-            raise BlenderError(f"critic cannot score {m.id}: {what} missing at {p}")
-    blocks = [
-        {"type": "text", "text": prompt},
-        {"type": "text", "text": "FIRST — the REFERENCE:"},
-        _image_block(ref_abs),
-        {"type": "text", "text": "SECOND — the CANDIDATE render:"},
-        _image_block(cand_abs),
-    ]
-    for panel in (focus_panels or [])[:2]:
-        panel_abs = shot.folder / panel["image_rel"]
-        if not panel_abs.is_file():
-            raise BlenderError(f"critic focus panel missing at {panel_abs}")
-        blocks += [
-            {
-                "type": "text",
-                "text": (
-                    f"FOCUS PANEL {panel['id']} — axis {panel['axis']}, crop "
-                    f"{panel['crop']} within source frame f{panel['source_frame']} "
-                    f"against {panel['reference']} (TOP-LEFT normalized), optical res_pct "
-                    f"{panel['res_pct']}. It contains aligned CANDIDATE | REFERENCE "
-                    f"and a 50/50 wipe. Reason: {panel['reason']}"
-                ),
-            },
-            _image_block(panel_abs),
-        ]
-    if motion_rel and (shot.folder / motion_rel).is_file():
-        blocks += [
-            {"type": "text", "text": f"THIRD — the MOTION STRIP, frames {motion_frames}:"},
-            _image_block(shot.folder / motion_rel),
-        ]
-    # The previous best, so the critic can judge DIRECTION of travel and not only
-    # absolute state. Explicitly framed as context: it must score the candidate.
-    if prior_rel and (shot.folder / prior_rel).is_file():
-        blocks += [
-            {
-                "type": "text",
-                "text": f"CONTEXT ONLY — the best PREVIOUS attempt at this frame, "
-                f"which scored {prior_mean}. Do NOT score this image. Use it "
-                f"to say whether the candidate improved or regressed, and "
-                f"record as a typed observation anything the previous attempt got right "
-                f"that the candidate has lost:",
-            },
-            _image_block(shot.folder / prior_rel),
-        ]
+    blocks = [{"type": "text", "text": prompt}, *_critic_image_blocks(
+        shot, m.ref, candidate_rel, focus_panels=focus_panels,
+        motion_rel=motion_rel, motion_frames=motion_frames, prior_rel=prior_rel, prior_mean=prior_mean,
+    )]
 
     # Still retried: the critic is a transient-failure choke point — an SDK hiccup here
     # once killed a layer AFTER it had passed at 4.0 and written its script. Scoring is

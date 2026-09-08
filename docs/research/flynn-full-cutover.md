@@ -1146,6 +1146,7 @@ production critic through the native transport:
 - `critic_prompt` describes a motion strip as the third image, while focus panels can
   precede it. Native prompt image references must come from the same ordered slot
   manifest used to attach images before that prompt/evidence layout is qualified.
+  The shared manifest increment below resolves this layout prerequisite.
 - Qualification of a prompt program needs an explicit distinction between its fixed
   instructions and bounded per-invocation facts. Recording a fully rendered prompt
   digest is useful provenance, but does not demonstrate that a calibration suite
@@ -1159,3 +1160,31 @@ preserved. VFX's 38 focused critic and execution-guard tests passed in 5.35 seco
 The frozen-source full VFX regression passed all 3,423 tests (847 + 846 + 865 + 865),
 with 84 existing Pillow warnings. The longest process took 1,164.90 seconds. Complete
 `src` Ruff and final diff checks passed. No paid inference was used.
+
+## Shared critic image manifest
+
+The critic's previous image layout had three concrete inconsistencies: focus panels
+preceded a motion strip still labelled "THIRD", missing declared motion/prior files
+were silently omitted, and focus panels beyond two were dropped while their metadata
+remained in the prompt. These are harness input defects, not failures of model judgment.
+
+Both transports now use the pure `agents/critic_images.py` manifest compiler. It
+validates the closed slot counts and explicit paths, and assigns the labels each
+transport uses with its actual attachments. The production prompt refers to semantic
+labels; its attachment-order text is generated from the same compiled list as the
+encoded images. Focus contract metadata is preserved and prior images remain context
+only. The production transport proves every declared image exists before encoding any
+of them and refuses excessive focus inputs instead of truncating them.
+
+Native image shape v2 records the labels alongside source and input digests. Tests
+compare the six-image manifest against the actual mocked HTTP request order, exercise
+zero/one/two focus panels before motion, and prove missing evidence refuses before
+provider invocation. This is a changed qualification input, not a qualification result.
+Explicit prompt-program qualification, judgment-debt authority and the composed layer's
+look qualification remain prerequisites to switching the production critic to Flynn.
+No SDK change or ARC test is needed for this VFX-owned contract.
+
+Validation: all 57 focused critic, medium-rubric and execution-guard tests passed in
+6.49 seconds. The frozen-source full suite passed all 3,437 tests (850 + 850 + 869 +
+868), with 84 existing Pillow deprecation warnings; the longest process took 1,000.14
+seconds. Complete-source Ruff and final diff checks passed. No paid inference was used.

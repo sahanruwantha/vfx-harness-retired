@@ -85,6 +85,8 @@ def test_native_critic_records_images_usage_and_an_unqualified_opinion(bound):
     database, report = audit(bound)
     assert [source["role"] for source in report["inputs"]["sources"]] == ["reference", "candidate", "focus"]
     assert [source["image_index"] for source in report["inputs"]["sources"]] == [0, 1, 2]
+    assert [source["label"] for source in report["inputs"]["sources"]] == ["REFERENCE", "CANDIDATE", "FOCUS PANEL 1"]
+    assert report["inputs"]["image_shape"] == "vfx-harness.critic-images/v2"
     with flynn.SQLiteRun.open(database) as run:
         assert run.read().revision == 0
         assert run.records()["commits"] == []
@@ -97,6 +99,33 @@ def test_native_critic_records_images_usage_and_an_unqualified_opinion(bound):
     assert report["model_identity"]["status"] == "matched"
     assert report["model_identity"]["response_model"] == deepseek.VISION_MODEL
     assert report["qualification_verified"] is report["acceptance_authorized"] is False
+
+
+def test_native_full_manifest_matches_actual_attached_images(bound):
+    requests = []
+    images = (("reference", "reference.png"), ("candidate", "candidate.png"),
+              ("focus", "focus.png"), ("focus", "candidate.png"),
+              ("motion", "reference.png"), ("prior", "focus.png"))
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        return response()
+
+    invoke(bound, handler, images=images)
+    _database, report = audit(bound)
+    sources = report["inputs"]["sources"]
+    assert [source["label"] for source in sources] == [
+        "REFERENCE", "CANDIDATE", "FOCUS PANEL 1", "FOCUS PANEL 2",
+        "MOTION STRIP", "PREVIOUS ATTEMPT — CONTEXT ONLY",
+    ]
+    attached = [item["image_url"]["url"] for message in requests[0]["messages"]
+                if isinstance(message["content"], list) for item in message["content"]
+                if item["type"] == "image_url"]
+    assert len(attached) == len(sources) == 6
+    for index, (url, source) in enumerate(zip(attached, sources, strict=True)):
+        assert source["image_index"] == index
+        assert source["input_sha256"] == hashlib.sha256(url.encode()).hexdigest()
+        assert source["path"] == images[index][1]
 
 
 @pytest.mark.parametrize("failure", ["missing", "different", "requested", "provider"])

@@ -883,7 +883,7 @@ def critic_prompt(
     motion = ""
     if motion_rel:
         motion = (
-            f"\nThe THIRD image is a MOTION STRIP — frames {motion_frames} of the shot side "
+            f"\nThe image labelled MOTION STRIP shows frames {motion_frames} of the shot side "
             f"by side. Judge any MOTION/finish axis (motion blur, weighty continuous "
             f"movement, the roll/dive progressing) from THAT strip, not from the single "
             f"still (a still at one frame cannot show motion). Judge every other axis from "
@@ -1003,8 +1003,8 @@ def critic_prompt(
     return (
         f"Stage {m.id} of shot '{shot.id}', frame {m.frame}.\n"
         f"TARGET STATE: {m.reads}\n\n"
-        f"The FIRST image is the REFERENCE ({Path(m.ref).name}).\n"
-        f"The SECOND image is the CANDIDATE render ({Path(candidate_rel).name}).{motion}"
+        f"The image labelled REFERENCE is the target ({Path(m.ref).name}).\n"
+        f"The image labelled CANDIDATE is the render to score ({Path(candidate_rel).name}).{motion}"
         f"{medium_block}{scope_block}{claims_block}{evidence_block}{focus_block}{review_block}"
         f"\nScore the candidate against the reference on these axes:\n"
         f"{axes}\n\n"

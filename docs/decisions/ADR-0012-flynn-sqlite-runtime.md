@@ -552,3 +552,21 @@ observations are explicitly `not_applicable`; they never claim a matched model.
 The report records this check separately from qualification and acceptance, which remain
 false. There is no alias inference or automatic retry. The SDK owns identity transport;
 VFX owns the equality policy and the eventual qualification decision.
+
+### Critic image manifest
+
+`agents/critic_images.py` compiles the bounded image list once into explicit role,
+path and label entries. Both transports consume those entries in order. The production
+critic renders its attachment-order text from that same list, and the prompt identifies
+the motion strip by its label instead of assuming it is third. Focus panels retain
+their contract ids, crop metadata and reason alongside their manifest label; the prior
+attempt remains context only and is never a scoring target.
+
+All declared production images must exist before any encoding or provider dispatch.
+Missing motion/prior images no longer disappear silently, an empty optional path is
+invalid rather than absent, and more than two focus panels refuses rather than truncates.
+The native `vfx-harness.critic-images/v2` shape includes each label beside its role,
+position and verified byte identities in required context and the durable input report.
+Its actual attached URL order is tested against those identities. This changes the
+evidence representation that qualification must cover, and grants no qualification or
+acceptance. No engine route or receipt authority changes.
