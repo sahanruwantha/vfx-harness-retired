@@ -78,20 +78,38 @@ def _validate_arguments(arguments: str, *, field: str | None = None) -> None:
 class _ObservationEvaluator:
     async def evaluate(self, candidate):
         result = json.loads(candidate.output)
+        refused = False
+        if result.get("schema", "").startswith("flynn.tool-result/"):
+            refused = flynn.ToolResult.from_json(candidate.output).status == "refused"
         return flynn.Evaluation(
             candidate,
             "vfx-executable-operation/v1",
             "operation observation only",
-            flynn.Verdict.FAILED if result.get("canonical") == "failed" else flynn.Verdict.SATISFIED,
+            flynn.Verdict.FAILED if refused or result.get("canonical") == "failed" else flynn.Verdict.SATISFIED,
             "VFX receipt readers, not this assessment, establish unit acceptance",
         )
 
 
-def _selected_feedback(observation: str | None) -> str | None:
+def _selected_feedback(observation: str | None) -> tuple[str | None, tuple[flynn.ImageInput, ...]]:
     """Select measured feedback; retain the full result in SQLite under its digest."""
     if observation is None:
-        return None
+        return None, ()
     result = json.loads(observation)
+    images = []
+    if result.get("schema", "").startswith("flynn.tool-result/"):
+        structured = flynn.ToolResult.from_json(observation)
+        content = []
+        for block in structured.content:
+            if isinstance(block, flynn.ImageContent):
+                images.append(flynn.ImageInput(block.url, block.detail))
+                content.append({"type": "image", "image_index": len(images) - 1})
+            else:
+                content.append({"type": "text", "text": block.text})
+        result = {
+            "status": structured.status,
+            "content": content,
+            "data": json.loads(structured.data_json) if structured.data_json is not None else None,
+        }
     verdicts = result.pop("verdicts", None)
     if verdicts is not None:
         result["points"] = [
@@ -108,7 +126,13 @@ def _selected_feedback(observation: str | None) -> str | None:
             for point, verdict in verdicts
         ]
     result["observation_sha256"] = hashlib.sha256(observation.encode()).hexdigest()
-    return json.dumps(result, sort_keys=True)
+    return json.dumps(result, sort_keys=True), tuple(images)
+
+
+def _prepare_feedback(request: flynn.InferenceRequest) -> flynn.InferenceRequest:
+    """Replace the previous observation's images; selection never accumulates history."""
+    feedback, images = _selected_feedback(request.observation)
+    return replace(request, observation=feedback, images=images)
 
 
 def _model_grants(*, inspected: bool, written: bool, observed: str | None, remaining: dict) -> tuple[str, ...]:
@@ -228,7 +252,8 @@ async def build_unit(
 
     def prepare(request):
         check_current()
-        feedback = _selected_feedback(request.observation)
+        request = _prepare_feedback(request)
+        feedback = request.observation
         phase = json.dumps({
             "initial_scene_inspected": inspected,
             "candidate_written": written,

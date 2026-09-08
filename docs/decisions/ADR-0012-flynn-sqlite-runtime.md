@@ -446,3 +446,18 @@ the two images, compact identities and a report locator/digest, with no acceptan
 state commit. Capture, candidate, prior, receipt and report substitutions fail closed.
 Production raster routing remains gated until the native builder's probe/freeze and
 canonical replay consume this capability under existing VFX completion rules.
+
+## Native builder structured feedback
+
+The builder now selects structured tool results through Flynn's strict result reader.
+It preserves status, complete text and structured data, replaces image blocks with
+ordered image indices in text, and supplies their unchanged URLs and detail levels as
+explicit image inputs. Every selected observation carries the original journal output's
+SHA-256. Only the latest observation's images are sent; subsequent text-only feedback
+removes them. Required text still must fit the existing context budget.
+
+Refused results receive a failed execution assessment while remaining available as
+observations. This does not change VFX acceptance or publish a state revision. Plain
+canonical replay feedback retains its measured-point selection. Unsupported or malformed
+Flynn result envelopes fail closed. This connects the builder's feedback preparation
+to the native capture/payment seam; raster probe/freeze integration remains outstanding.

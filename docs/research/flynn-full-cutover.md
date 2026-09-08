@@ -955,3 +955,36 @@ Ruff on the complete source tree, diff checks and an isolated installed-package 
 passed. The tests emitted 22 existing Pillow `getdata` deprecation warnings. This adds
 one isolated builder capability without changing existing runtime imports or routing;
 the full repository suite was not rerun.
+
+## Builder image feedback transport
+
+The native builder's request preparation now decodes Flynn structured results rather
+than serializing image payloads into bounded text. It retains full text, status, data
+and original observation SHA-256, preserves label/image ordering through image indices,
+and sends image URLs and detail levels through explicit image inputs. Selection replaces
+the prior images on every request. Refused operations receive failed assessments while
+their complete correction feedback remains available; no state revision is published.
+
+The capture/payment contract now uses this production feedback preparation. An additional
+SQLite-backed three-step test proves that two images reach the next request, a subsequent
+refusal removes them, the full legal-threshold explanation survives, and original outputs
+remain in the journal. Invalid and unsupported result envelopes fail closed; plain
+canonical feedback retains failed measurements and missing-evidence identities.
+
+All 62 focused feedback, capture, payment, dispatch, phase-budget and real Blender unit
+lifecycle tests passed, with 15 Pillow deprecation warnings. Complete-source Ruff passed.
+An additional isolated import with `claude_agent_sdk` blocked failed at the existing
+`agents/builder/__init__.py` import. Native execution must not be confused with a
+Claude-free package: the shared initializer and remaining raster/generated/critic
+paths still require migration. No SDK changes or paid inference were needed here.
+
+The full frozen-source regression subsequently passed all 3,374 tests in four isolated
+processes (830 + 848 + 848 + 848), with 37 existing Pillow deprecation warnings.
+Complete-source Ruff and diff checks passed after the run.
+
+Next, retain the live builder lease for the capture capability, add budget-aware capture
+and payment grants, invalidate measured-candidate status after evidence changes, and
+reopen required payments at freeze. Prove a genuinely accepted executable image-contract
+unit and injected unpaid/stale cases through existing cold canonical replay and receipt
+readers before enabling production raster routing. Qualitative and generated construction
+need their own explicit migrations; they must not fall through to an implicit critic call.

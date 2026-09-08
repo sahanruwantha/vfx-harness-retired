@@ -243,6 +243,11 @@ operation.
   candidate separately. Fixed EEVEE/0.5 images must have matching resolution. A rewritten
   candidate must be recaptured before payment; its previous handles are retired. No
   partial capture registers a handle, and capture reports grant no acceptance (ADR-0012).
+- Native builder feedback preserves the original observation digest, structured data,
+  complete refusal text and image-label order. Transport image bytes through Flynn's
+  image inputs, outside the bounded text context; replace images with each selected
+  observation instead of accumulating them. A tool refusal is not a satisfied execution
+  assessment, and neither assessment authorizes VFX acceptance (ADR-0012).
 - Native builder inspection reconstructs the selected prior chain from an empty scene,
   evaluates the active unit frame and exposes only owned and read-only predecessor
   objects. Prepare and recheck replay-source bindings through the inspection report;

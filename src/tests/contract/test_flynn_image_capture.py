@@ -65,9 +65,12 @@ def test_capture_and_payment_share_a_journal_without_acceptance(tmp_path, monkey
                 if self.calls == 1:
                     call = flynn.ToolCall('capture_unit_frame', '{"frame": 240}')
                 else:
-                    observation = flynn.ToolResult.from_json(request.observation)
-                    data = json.loads(observation.data_json)
-                    assert len(observation.content) == 4
+                    observation = json.loads(request.observation)
+                    data = observation['data']
+                    assert len(observation['content']) == 4
+                    assert len(request.images) == 2
+                    assert all(image.url.startswith('data:image/') for image in request.images)
+                    assert 'base64' not in request.observation
                     assert 'replay_inputs' not in data
                     call = flynn.ToolCall('propose_checks', json.dumps({
                         'checks': [{'id': 'image-gap', 'frame': 240, 'axis': 'final_lock',
@@ -81,7 +84,8 @@ def test_capture_and_payment_share_a_journal_without_acceptance(tmp_path, monkey
                                    limits=flynn.RunLimits(2, 2, 2, 60)) as run:
             runtime = flynn.Runtime(inference=Adapter(), tools=flynn.ToolBroker(capture.tools),
                                     evaluator=flynn_unit._ObservationEvaluator(), run=run,
-                                    grants=('capture_unit_frame', 'propose_checks'), guards=(capture.guard,))
+                                    grants=('capture_unit_frame', 'propose_checks'), guards=(capture.guard,),
+                                    prepare_request=flynn_unit._prepare_feedback)
             first = asyncio.run(runtime.step('Capture.'))
             data = json.loads(flynn.ToolResult.from_json(first.candidate.output).data_json)
             assert data['candidate']['candidate_sha256'] == digest(candidate.read_bytes())
