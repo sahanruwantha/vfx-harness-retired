@@ -45,7 +45,7 @@ def response(value=None, tool="submit_verdict"):
 def invoke(layout, handler, *, check=lambda: None, **updates):
     arguments = {
         "folder": layout.shot, "scope_id": "layer:surface", "phase": "observer",
-        "requested_model": deepseek.VISION_MODEL,
+        "requested_provider": "deepseek", "requested_model": deepseek.VISION_MODEL,
         "prompt": "Judge the supplied reference and candidate on the declared form axis.",
         "axes": (("form", "Visible form"),), "frames": (7,), "allow_na": False,
         "images": (("reference", "reference.png"), ("candidate", "candidate.png"), ("focus", "focus.png")),
@@ -94,6 +94,57 @@ def test_native_critic_records_images_usage_and_an_unqualified_opinion(bound):
         assert flynn.SessionTermination.from_json(run.outcome()).kind == "stopped"
     assert report["usage"]["known_output_tokens"] == 31
     assert report["inputs_validated_after_inference"] is True
+    assert report["model_identity"]["status"] == "matched"
+    assert report["model_identity"]["response_model"] == deepseek.VISION_MODEL
+    assert report["qualification_verified"] is report["acceptance_authorized"] is False
+
+
+@pytest.mark.parametrize("failure", ["missing", "different", "requested", "provider"])
+def test_model_identity_mismatch_preserves_spending_and_refuses_verdict(bound, failure):
+    calls = []
+
+    def handler(_):
+        calls.append(1)
+        payload = json.loads(response().content)
+        if failure == "missing":
+            payload.pop("model")
+        elif failure == "different":
+            payload["model"] = "unqualified-replacement"
+        return httpx.Response(200, json=payload)
+
+    updates = {}
+    if failure == "requested":
+        updates["requested_model"] = "different-request"
+    elif failure == "provider":
+        updates["requested_provider"] = "different-provider"
+    with pytest.raises(ValueError, match="identity mismatch"):
+        invoke(bound, handler, **updates)
+    assert calls == [1]
+    database, report = audit(bound)
+    with flynn.SQLiteRun.open(database) as run:
+        assert run.remaining()["tool"] == 1
+        assert run.records()["commits"] == []
+        assert run.latest_observation() is None
+    assert report["usage"]["known_output_tokens"] == 31
+    assert report["model_identity"]["status"] == "unverified"
+    assert report["inputs_validated_after_inference"] is False
+    assert report["qualification_verified"] is report["acceptance_authorized"] is False
+
+
+def test_scripted_critic_never_claims_model_identity(bound):
+    result = asyncio.run(critic_transport.execute(
+        folder=bound.shot, scope_id="scripted", phase="observer",
+        requested_provider="deepseek", requested_model=deepseek.VISION_MODEL,
+        prompt="Offline structured opinion fixture.", axes=(("form", "Visible form"),),
+        frames=(7,), images=(("reference", "reference.png"), ("candidate", "candidate.png")),
+        allow_na=False, check_current=lambda: None,
+        inference=flynn.ScriptedAdapter([flynn.ToolCall("submit_verdict", json.dumps(verdict()))]),
+    ))
+    assert result["verdict"] == verdict()
+    _database, report = audit(bound)
+    assert report["model_identity"]["status"] == "not_applicable"
+    assert report["model_identity"]["provider"] is None
+    assert report["model_identity"]["response_model"] is None
     assert report["qualification_verified"] is report["acceptance_authorized"] is False
 
 

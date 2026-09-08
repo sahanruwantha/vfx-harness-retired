@@ -627,6 +627,10 @@ the replay closure separately binds the script; a script digest cannot stand in 
 render (HIR-0253).
 Native critic transport records a structured observation only. Its requested model,
 prompt/context/schema digests and image identities are provenance, never qualification.
+For model calls, it checks the exact operation's durable provider, requested model and
+provider-reported response model before submitting a verdict; missing or different identity
+refuses without discarding spending. Scripted observations explicitly have no model identity.
+Matching reported identity does not prove model weights or establish judge qualification.
 Do not route that opinion into production acceptance until the owning harness verifies
 qualification against the actual invocation. The transport's successful session and
 schema assessment authorize no state commit, retry or layer completion (ADR-0012).

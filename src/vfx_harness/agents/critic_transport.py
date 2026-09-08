@@ -58,20 +58,21 @@ class _StructureEvaluator:
 
 
 async def execute(
-    *, folder: Path, scope_id: str, phase: str, requested_model: str,
+    *, folder: Path, scope_id: str, phase: str, requested_provider: str, requested_model: str,
     prompt: str, axes: tuple[tuple[str, str], ...], frames: tuple[int, ...],
     images: tuple[tuple[str, str], ...], allow_na: bool,
     inference: flynn.InferenceAdapter, check_current: Callable[[], None],
 ) -> dict:
     """Record one bounded opinion; refusals/errors propagate without retry or fallback.
 
-    Model identity here is explicitly requested identity. The SDK's usage records
-    separately preserve actual provider/model metadata, including unknown usage.
-    Neither value is a qualification credential.
+    Model observations require matching requested and provider-reported identity.
+    Scripted observations remain explicitly not applicable. Neither is a
+    qualification credential or proof of the provider's actual model weights.
     """
     check_current()
-    if any(not isinstance(value, str) or not value.strip() for value in (scope_id, phase, requested_model, prompt)):
-        raise ValueError("critic requires nonempty scope, phase, requested model and prompt")
+    if any(not isinstance(value, str) or not value.strip()
+           for value in (scope_id, phase, requested_provider, requested_model, prompt)):
+        raise ValueError("critic requires nonempty scope, phase, requested provider/model and prompt")
     names = [name for name, _description in axes]
     if (not names or len(set(names)) != len(names)
             or any(not isinstance(name, str) or not name.strip() for name in names)):
@@ -100,7 +101,8 @@ async def execute(
     database = layout.checkpoints / "flynn" / f"{invocation}.sqlite"
     inputs = {
         "schema": "vfx-harness.critic-inputs/v1", "scope_id": scope_id, "phase": phase,
-        "requested_model": requested_model, "image_shape": IMAGE_SHAPE, "sources": sources,
+        "requested_provider": requested_provider, "requested_model": requested_model,
+        "image_shape": IMAGE_SHAPE, "sources": sources,
         "prompt_sha256": _digest(prompt.encode()), "context_sha256": _digest(packet.text.encode()),
         "response_schema_sha256": _digest(json.dumps(schema, sort_keys=True).encode()),
         "axes": axes, "frames": frames, "allow_na": allow_na,
@@ -120,9 +122,32 @@ async def execute(
         current()
         return replace(request, images=snapshots)
 
-    async def guard(_request):
+    model_identity = {"status": "unverified"}
+
+    async def guard(request):
         current()
-        return flynn.GuardDecision(True, "owning authority and exact critic image bytes remain current")
+        rows = [row for row in run.records()["inference_usage"]
+                if row["operation_id"] == request.operation_id]
+        if len(rows) != 1:
+            raise ValueError(
+                "critic requires one durable inference identity; preserve this journal and repair the adapter"
+            )
+        usage = json.loads(rows[0]["payload"])
+        model_identity.update(operation_id=request.operation_id, kind=usage["kind"],
+                              provider=usage["provider"], requested_model=usage["model"],
+                              response_model=usage.get("response_model"))
+        if usage["kind"] == "scripted":
+            model_identity["status"] = "not_applicable"
+        else:
+            expected = (requested_provider, requested_model, requested_model)
+            observed = (usage["provider"], usage["model"], usage.get("response_model"))
+            if observed != expected:
+                raise ValueError(
+                    f"critic provider/request/response identity mismatch: expected {expected!r}, got {observed!r}; "
+                    "preserve this observation attempt and qualify the intended model before retrying"
+                )
+            model_identity["status"] = "matched"
+        return flynn.GuardDecision(True, "current critic inputs and recorded inference identity checked")
 
     async def submit(arguments):
         current()
@@ -160,6 +185,7 @@ async def execute(
                 "journal": database.relative_to(layout.root).as_posix(),
                 "usage": run.usage_summary(), "output_budget": asdict(run.output_budget()),
                 "termination": run.outcome(), "inputs_validated_after_inference": validated,
+                "model_identity": model_identity,
                 "acceptance_authorized": False, "qualification_verified": False, "pricing_status": "unpriced",
             })
         current()

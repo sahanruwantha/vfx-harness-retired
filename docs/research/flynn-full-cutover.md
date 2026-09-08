@@ -1086,7 +1086,7 @@ Its output cap is 8,192 tokens and its deadline is 180 seconds. Errors and cance
 propagate without retries. The journal and report retain usage even when submission fails.
 
 Reports include scope/phase, requested model, exact prompt/context/schema digests and
-image identities. Actual provider/model metadata remains in the SDK's usage records.
+image identities. Configured provider/model metadata remains in the SDK's usage records.
 Neither is a qualification credential. Every returned/report result explicitly grants
 no qualification or acceptance authority. The existing production critic is not switched.
 
@@ -1107,5 +1107,55 @@ identically. The frozen-source full regression passed all 3,418 tests in four is
 processes (845 + 845 + 864 + 864), with 84 existing Pillow deprecation warnings. The
 longest process took 1,019.91 seconds. Final complete-source Ruff and diff checks passed.
 No SDK change, ARC testing or paid inference was needed. Flynn's guard context already
-exposes the operation id and its public records retain the associated inference usage;
-the next VFX qualification gate can compare provider-reported identity using those records.
+exposes the operation id and its public records retain the associated inference usage.
+Subsequent inspection found that this usage carried requested model identity only; the
+next increment below supplies the missing provider-reported identity.
+
+## Reported model identity prerequisite
+
+Inspection of Flynn's DeepSeek adapter found that `InferenceUsage.model` always used
+the configured model, discarding the response's model field. A qualification check
+against that value would merely compare two requested identities.
+
+SDK main commit `b39431f` adds independently nullable `response_model` to neutral usage.
+It retains the provider's value even on rejected responses and leaves absent or invalid
+values unknown. Existing immutable usage JSON transports the new field; historical
+absence never implies a match. Matching and qualification policy remain harness-owned.
+
+The native VFX critic now binds requested provider/model in its input record and checks
+the exact operation's durable usage before submission. Wrong provider, different
+request, different response model, and missing response model refuse while retaining
+spending. Scripted observations remain explicitly not applicable. Reports expose the
+identity check separately, with qualification and acceptance still false. There is no
+claim that a provider's reported name proves which weights it served.
+
+The production switch remains gated on exact prompt/evidence qualification and explicit
+composed-layer look authority. No production look obligation or receipt writer changed.
+
+The next implementation must resolve these source-backed gaps before dispatching a
+production critic through the native transport:
+
+- `validate_qualification` verifies an artifact against the claim's declarations, not
+  the current invocation. Qualification admission must check the selected source bytes
+  and the effective model, instructions, response contract and image representation
+  before spend, then retain the same source checks around consumption.
+- `_composition_judge_unit` synthesizes judgment-debt claims as qualified without
+  attaching the normal qualification record. A broad layer look judgment can instead
+  have no composition unit at all. Neither case may inherit a constituent unit's
+  executable success as judge qualification; each needs explicit owning authority.
+- `critic_prompt` describes a motion strip as the third image, while focus panels can
+  precede it. Native prompt image references must come from the same ordered slot
+  manifest used to attach images before that prompt/evidence layout is qualified.
+- Qualification of a prompt program needs an explicit distinction between its fixed
+  instructions and bounded per-invocation facts. Recording a fully rendered prompt
+  digest is useful provenance, but does not demonstrate that a calibration suite
+  covers a different invocation. Do not substitute a caller-provided version label
+  for that contract or automatically grant qualification after a structured response.
+
+The identity increment passed all 208 SDK tests and strict type/lint checks. SDK commit
+`b39431f667b5b2b21c32b36fb310082e959cc60c` was installed from SSH into both VFX and ARC;
+ARC's required offline gate passed 522 tests in 92.39 seconds and its updated lock was
+preserved. VFX's 38 focused critic and execution-guard tests passed in 5.35 seconds.
+The frozen-source full VFX regression passed all 3,423 tests (847 + 846 + 865 + 865),
+with 84 existing Pillow warnings. The longest process took 1,164.90 seconds. Complete
+`src` Ruff and final diff checks passed. No paid inference was used.

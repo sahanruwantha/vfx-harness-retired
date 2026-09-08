@@ -525,8 +525,8 @@ Authority, active run and image bytes are checked before inference, before submi
 before returning the opinion. Invalid responses spend inference but do not submit a tool.
 Cancellation and provider failures propagate with their durable spending/termination records.
 Reports bind the requested prompt/context/response schema and image identities to the journal,
-whose usage records carry actual provider/model metadata. Requested identity is not claimed
-to be verified provider identity. Neither a schema-valid opinion nor either identity is
+whose usage records carry requested and provider-reported model identity separately.
+Neither a schema-valid opinion nor either identity is
 qualification: reports and returned results explicitly set `qualification_verified` and
 `acceptance_authorized` false.
 
@@ -535,3 +535,20 @@ qualification reader compares artifact fields to claim fields; runtime critic in
 does not compare its actual model, prompt and evidence shape to those fields. A production
 switch must close that gap, including the composed layer's independent look judgment.
 Reusing a previous model's qualification implicitly is not an allowed migration mechanism.
+
+### Reported model identity admission
+
+Flynn's `InferenceUsage.model` identifies the requested model; it did not previously
+retain the response's model field. SDK main now adds nullable `response_model` to the
+existing immutable usage JSON. DeepSeek records it on valid and rejected responses,
+and leaves missing or malformed identity unknown instead of copying the request.
+This is transport provenance, not proof of the provider's model weights.
+
+The native critic requires an explicit requested provider as well as model. Its dispatch
+guard selects the one usage row for the exact operation and compares provider, requested
+model and response model to those intended inputs. Unknown or different identity refuses
+before verdict submission, with inference usage and termination retained. Scripted
+observations are explicitly `not_applicable`; they never claim a matched model.
+The report records this check separately from qualification and acceptance, which remain
+false. There is no alias inference or automatic retry. The SDK owns identity transport;
+VFX owns the equality policy and the eventual qualification decision.
